@@ -1,0 +1,24 @@
+import { DataSource } from 'typeorm';
+import { User } from '../user/entities/user.entity';
+import { TokenBlacklist } from '../auth/entities/token-blacklist.entity';
+import { StockMapping } from '../mapping/entities/stock-mapping.entity';
+import { TradingRules } from '../trading-rules/entities/trading-rules.entity';
+import { TradeLog } from '../trade/entities/trade-log.entity';
+import { loadEnvFile } from './load-env';
+
+loadEnvFile();
+
+// CLI-only data source for running migrations. DB_PASSWORD is injected as a
+// process env var by the deploy script (sourced from Secrets Manager) for the
+// single CLI invocation — it is never written to the committed .env file.
+export const AppDataSource = new DataSource({
+  type: 'postgres',
+  host: process.env.DB_HOST ?? '127.0.0.1',
+  port: Number(process.env.DB_PORT ?? 5432),
+  username: process.env.DB_USERNAME ?? 'trading_view_bot',
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME ?? 'trading_view_bot',
+  entities: [User, TokenBlacklist, StockMapping, TradingRules, TradeLog],
+  migrations: ['src/database/migrations/*.ts'],
+  synchronize: false,
+});

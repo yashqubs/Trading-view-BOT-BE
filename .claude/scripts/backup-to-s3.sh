@@ -10,8 +10,8 @@
 set -euo pipefail
 
 # ---- Config (non-sensitive) ----
-DB_NAME="trading_bot"
-DB_USER="trading_bot_app"
+DB_NAME="trading_view_bot"
+DB_USER="trading_view_bot"
 DB_HOST="127.0.0.1"
 DB_PORT="5432"
 S3_BUCKET="s3://your-trading-bot-backups"

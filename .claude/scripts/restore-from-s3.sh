@@ -9,8 +9,8 @@
 
 set -euo pipefail
 
-DB_NAME="trading_bot"
-DB_USER="trading_bot_app"
+DB_NAME="trading_view_bot"
+DB_USER="trading_view_bot"
 DB_HOST="127.0.0.1"
 DB_PORT="5432"
 S3_BUCKET="s3://your-trading-bot-backups"
@@ -54,4 +54,4 @@ gunzip -c "${LOCAL_DUMP}" \
 rm -f "${LOCAL_DUMP}"
 unset DB_PASSWORD
 
-echo "[restore] Restore complete. Verify the data, then restart the app (pm2 restart trading-bot)."
+echo "[restore] Restore complete. Verify the data, then restart the app (pm2 restart trading_view_bot)."

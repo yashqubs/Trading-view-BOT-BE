@@ -334,7 +334,7 @@ A simple user management system so an admin can create additional portal users w
 | AWS_REGION | AWS region | eu-west-2 |
 | DB_HOST | Always localhost | 127.0.0.1 |
 | DB_PORT | PostgreSQL port | 5432 |
-| DB_NAME | Database name | trading_bot |
+| DB_NAME | Database name | trading_view_bot |
 | FRONTEND_ORIGIN | Portal URL (CORS) | https://portal.your-domain.com |
 | SECRET_NAME_IG | Secrets Manager key name | prod/trading-bot/ig |
 | SECRET_NAME_APP | Secrets Manager key name | prod/trading-bot/app |
