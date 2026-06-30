@@ -1,11 +1,14 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { Repository } from 'typeorm';
 import { Direction, TradeStatus } from '../common/enums';
 import { IgClientService } from '../ig-client/ig-client.service';
 import { MappingService } from '../mapping/mapping.service';
 import { TradeLog } from '../trade/entities/trade-log.entity';
 import { TradingRulesService } from '../trading-rules/trading-rules.service';
+import { DailyActivityQueryDto } from './dto/daily-activity-query.dto';
+import { StatsDaysQueryDto } from './dto/stats-days-query.dto';
+import { StatsFilterQueryDto } from './dto/stats-filter-query.dto';
 import {
   DailyActivityPoint,
   OverviewStats,
@@ -13,6 +16,7 @@ import {
   StockActivity,
   StockStats,
 } from './interfaces/stats.interfaces';
+import { applyStatsFilters, StatsFilterOptions, toStatsFilter } from './utils/stats-query.util';
 
 const EXECUTED_STATUSES = [TradeStatus.SUCCESS, TradeStatus.FAILED];
 
@@ -25,9 +29,51 @@ export class StatsService {
     private readonly mappingService: MappingService,
   ) {}
 
-  async overview(): Promise<OverviewStats> {
+  async overview(query: StatsFilterQueryDto = {}): Promise<OverviewStats> {
+    const filter = toStatsFilter(query);
     const rules = await this.tradingRulesService.get();
     const [start, end] = this.todayRange();
+
+    const executedBase = applyStatsFilters(
+      this.tradeLogRepository
+        .createQueryBuilder('trade')
+        .where('trade.status IN (:...statuses)', { statuses: EXECUTED_STATUSES }),
+      filter,
+    );
+
+    const successBase = applyStatsFilters(
+      this.tradeLogRepository
+        .createQueryBuilder('trade')
+        .where('trade.status = :status', { status: TradeStatus.SUCCESS }),
+      filter,
+    );
+
+    const todaysBase = this.tradeLogRepository
+      .createQueryBuilder('trade')
+      .where('trade.status IN (:...statuses)', { statuses: EXECUTED_STATUSES })
+      .andWhere('trade.createdAt BETWEEN :start AND :end', { start, end });
+    if (filter.ticker) {
+      todaysBase.andWhere('trade.tvTicker = :ticker', { ticker: filter.ticker });
+    }
+
+    const todaysInvestedBase = this.tradeLogRepository
+      .createQueryBuilder('trade')
+      .select('COALESCE(SUM(trade.investmentAmount), 0)', 'total')
+      .where('trade.status = :status', { status: TradeStatus.SUCCESS })
+      .andWhere('trade.createdAt BETWEEN :start AND :end', { start, end });
+    if (filter.ticker) {
+      todaysInvestedBase.andWhere('trade.tvTicker = :ticker', { ticker: filter.ticker });
+    }
+
+    const directionQb = applyStatsFilters(
+      this.tradeLogRepository
+        .createQueryBuilder('trade')
+        .select('SUM(CASE WHEN trade.direction = :buy THEN 1 ELSE 0 END)', 'buyCount')
+        .addSelect('SUM(CASE WHEN trade.direction = :sell THEN 1 ELSE 0 END)', 'sellCount')
+        .where('trade.status IN (:...statuses)', { statuses: EXECUTED_STATUSES })
+        .setParameters({ buy: Direction.BUY, sell: Direction.SELL }),
+      filter,
+    );
 
     const [
       totalTrades,
@@ -37,27 +83,12 @@ export class StatsService {
       directionCounts,
       openPositions,
     ] = await Promise.all([
-      this.tradeLogRepository.count({ where: { status: In(EXECUTED_STATUSES) } }),
-      this.tradeLogRepository
-        .createQueryBuilder('trade')
-        .where('trade.status IN (:...statuses)', { statuses: EXECUTED_STATUSES })
-        .andWhere('trade.createdAt BETWEEN :start AND :end', { start, end })
-        .getCount(),
-      this.tradeLogRepository.count({ where: { status: TradeStatus.SUCCESS } }),
-      this.tradeLogRepository
-        .createQueryBuilder('trade')
-        .select('COALESCE(SUM(trade.investmentAmount), 0)', 'total')
-        .where('trade.status = :status', { status: TradeStatus.SUCCESS })
-        .andWhere('trade.createdAt BETWEEN :start AND :end', { start, end })
-        .getRawOne<{ total: string }>(),
-      this.tradeLogRepository
-        .createQueryBuilder('trade')
-        .select('SUM(CASE WHEN trade.direction = :buy THEN 1 ELSE 0 END)', 'buyCount')
-        .addSelect('SUM(CASE WHEN trade.direction = :sell THEN 1 ELSE 0 END)', 'sellCount')
-        .where('trade.status IN (:...statuses)', { statuses: EXECUTED_STATUSES })
-        .setParameters({ buy: Direction.BUY, sell: Direction.SELL })
-        .getRawOne<{ buyCount: string; sellCount: string }>(),
-      this.igClientService.getOpenPositionCount(),
+      executedBase.getCount(),
+      todaysBase.getCount(),
+      successBase.getCount(),
+      todaysInvestedBase.getRawOne<{ total: string }>(),
+      directionQb.getRawOne<{ buyCount: string; sellCount: string }>(),
+      this.resolveOpenPositions(filter.ticker),
     ]);
 
     const todaysInvested = Number(todaysInvestedRaw?.total ?? 0);
@@ -80,20 +111,24 @@ export class StatsService {
     };
   }
 
-  async dailyActivity(days = 30): Promise<DailyActivityPoint[]> {
-    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  async dailyActivity(query: DailyActivityQueryDto = {}): Promise<DailyActivityPoint[]> {
+    const hasDateRange = Boolean(query.from && query.to);
+    const days = hasDateRange ? undefined : (query.days ?? 30);
+    const filter = toStatsFilter({ days, ticker: query.ticker, from: query.from, to: query.to });
 
-    const rows = await this.tradeLogRepository
-      .createQueryBuilder('trade')
-      .select("TO_CHAR(trade.createdAt, 'YYYY-MM-DD')", 'date')
-      .addSelect('COUNT(*)', 'trades')
-      .addSelect(
-        'COALESCE(SUM(CASE WHEN trade.status = :success THEN trade.investmentAmount ELSE 0 END), 0)',
-        'invested',
-      )
-      .where('trade.status IN (:...statuses)', { statuses: EXECUTED_STATUSES })
-      .andWhere('trade.createdAt >= :since', { since })
-      .setParameters({ success: TradeStatus.SUCCESS })
+    const rows = await applyStatsFilters(
+      this.tradeLogRepository
+        .createQueryBuilder('trade')
+        .select("TO_CHAR(trade.createdAt, 'YYYY-MM-DD')", 'date')
+        .addSelect('COUNT(*)', 'trades')
+        .addSelect(
+          'COALESCE(SUM(CASE WHEN trade.status = :success THEN trade.investmentAmount ELSE 0 END), 0)',
+          'invested',
+        )
+        .where('trade.status IN (:...statuses)', { statuses: EXECUTED_STATUSES })
+        .setParameters({ success: TradeStatus.SUCCESS }),
+      filter,
+    )
       .groupBy('date')
       .orderBy('date', 'ASC')
       .getRawMany<{ date: string; trades: string; invested: string }>();
@@ -105,17 +140,22 @@ export class StatsService {
     }));
   }
 
-  async byStock(): Promise<StockActivity[]> {
-    const rows = await this.tradeLogRepository
-      .createQueryBuilder('trade')
-      .select('trade.tvTicker', 'tvTicker')
-      .addSelect('COUNT(*)', 'trades')
-      .addSelect(
-        'COALESCE(SUM(CASE WHEN trade.status = :success THEN trade.investmentAmount ELSE 0 END), 0)',
-        'invested',
-      )
-      .where('trade.status IN (:...statuses)', { statuses: EXECUTED_STATUSES })
-      .setParameters({ success: TradeStatus.SUCCESS })
+  async byStock(query: StatsDaysQueryDto = {}): Promise<StockActivity[]> {
+    const filter = toStatsFilter(query);
+
+    const rows = await applyStatsFilters(
+      this.tradeLogRepository
+        .createQueryBuilder('trade')
+        .select('trade.tvTicker', 'tvTicker')
+        .addSelect('COUNT(*)', 'trades')
+        .addSelect(
+          'COALESCE(SUM(CASE WHEN trade.status = :success THEN trade.investmentAmount ELSE 0 END), 0)',
+          'invested',
+        )
+        .where('trade.status IN (:...statuses)', { statuses: EXECUTED_STATUSES })
+        .setParameters({ success: TradeStatus.SUCCESS }),
+      filter,
+    )
       .groupBy('trade.tvTicker')
       .orderBy('"trades"', 'DESC')
       .getRawMany<{ tvTicker: string; trades: string; invested: string }>();
@@ -127,38 +167,47 @@ export class StatsService {
     }));
   }
 
-  async statusBreakdown(): Promise<StatusBreakdownPoint[]> {
-    const rows = await this.tradeLogRepository
-      .createQueryBuilder('trade')
-      .select('trade.status', 'status')
-      .addSelect('COUNT(*)', 'count')
+  async statusBreakdown(query: StatsFilterQueryDto = {}): Promise<StatusBreakdownPoint[]> {
+    const filter = toStatsFilter(query);
+
+    const rows = await applyStatsFilters(
+      this.tradeLogRepository
+        .createQueryBuilder('trade')
+        .select('trade.status', 'status')
+        .addSelect('COUNT(*)', 'count'),
+      filter,
+    )
       .groupBy('trade.status')
       .getRawMany<{ status: TradeStatus; count: string }>();
 
     return rows.map((row) => ({ status: row.status, count: Number(row.count) }));
   }
 
-  async stockDetail(tvTicker: string): Promise<StockStats> {
-    const totalsRow = await this.tradeLogRepository
-      .createQueryBuilder('trade')
-      .select('COUNT(*)', 'totalTrades')
-      .addSelect(
-        'COALESCE(SUM(CASE WHEN trade.status = :success THEN trade.investmentAmount ELSE 0 END), 0)',
-        'totalInvested',
-      )
-      .addSelect('SUM(CASE WHEN trade.direction = :buy THEN 1 ELSE 0 END)', 'buyCount')
-      .addSelect('SUM(CASE WHEN trade.direction = :sell THEN 1 ELSE 0 END)', 'sellCount')
-      .addSelect('SUM(CASE WHEN trade.status = :success THEN 1 ELSE 0 END)', 'successCount')
-      .where('trade.tvTicker = :tvTicker', { tvTicker })
-      .andWhere('trade.status IN (:...statuses)', { statuses: EXECUTED_STATUSES })
-      .setParameters({ success: TradeStatus.SUCCESS, buy: Direction.BUY, sell: Direction.SELL })
-      .getRawOne<{
-        totalTrades: string;
-        totalInvested: string;
-        buyCount: string;
-        sellCount: string;
-        successCount: string;
-      }>();
+  async stockDetail(tvTicker: string, query: StatsDaysQueryDto = {}): Promise<StockStats> {
+    const filter = toStatsFilter(query);
+
+    const totalsRow = await applyStatsFilters(
+      this.tradeLogRepository
+        .createQueryBuilder('trade')
+        .select('COUNT(*)', 'totalTrades')
+        .addSelect(
+          'COALESCE(SUM(CASE WHEN trade.status = :success THEN trade.investmentAmount ELSE 0 END), 0)',
+          'totalInvested',
+        )
+        .addSelect('SUM(CASE WHEN trade.direction = :buy THEN 1 ELSE 0 END)', 'buyCount')
+        .addSelect('SUM(CASE WHEN trade.direction = :sell THEN 1 ELSE 0 END)', 'sellCount')
+        .addSelect('SUM(CASE WHEN trade.status = :success THEN 1 ELSE 0 END)', 'successCount')
+        .where('trade.tvTicker = :tvTicker', { tvTicker })
+        .andWhere('trade.status IN (:...statuses)', { statuses: EXECUTED_STATUSES })
+        .setParameters({ success: TradeStatus.SUCCESS, buy: Direction.BUY, sell: Direction.SELL }),
+      filter,
+    ).getRawOne<{
+      totalTrades: string;
+      totalInvested: string;
+      buyCount: string;
+      sellCount: string;
+      successCount: string;
+    }>();
 
     const totalTrades = Number(totalsRow?.totalTrades ?? 0);
     if (totalTrades === 0) {
@@ -171,10 +220,10 @@ export class StatsService {
           where: { tvTicker, status: TradeStatus.SUCCESS },
           order: { createdAt: 'DESC' },
         }),
-        this.statusBreakdownFiltered(tvTicker),
-        this.timelineFiltered(tvTicker),
-        this.entryPricesFiltered(tvTicker),
-        this.investedOverTimeFiltered(tvTicker),
+        this.statusBreakdownFiltered(tvTicker, filter),
+        this.timelineFiltered(tvTicker, filter),
+        this.entryPricesFiltered(tvTicker, filter),
+        this.investedOverTimeFiltered(tvTicker, filter),
         this.mappingService.findByTicker(tvTicker),
       ]);
 
@@ -198,25 +247,50 @@ export class StatsService {
     };
   }
 
-  private async statusBreakdownFiltered(tvTicker: string): Promise<StatusBreakdownPoint[]> {
-    const rows = await this.tradeLogRepository
-      .createQueryBuilder('trade')
-      .select('trade.status', 'status')
-      .addSelect('COUNT(*)', 'count')
-      .where('trade.tvTicker = :tvTicker', { tvTicker })
+  private async resolveOpenPositions(ticker?: string): Promise<number> {
+    if (!ticker) {
+      return this.igClientService.getOpenPositionCount();
+    }
+
+    const mapping = await this.mappingService.findByTicker(ticker);
+    if (!mapping) {
+      return 0;
+    }
+
+    return this.igClientService.getOpenPositionCount(mapping.igEpic);
+  }
+
+  private async statusBreakdownFiltered(
+    tvTicker: string,
+    filter: StatsFilterOptions,
+  ): Promise<StatusBreakdownPoint[]> {
+    const rows = await applyStatsFilters(
+      this.tradeLogRepository
+        .createQueryBuilder('trade')
+        .select('trade.status', 'status')
+        .addSelect('COUNT(*)', 'count')
+        .where('trade.tvTicker = :tvTicker', { tvTicker }),
+      filter,
+    )
       .groupBy('trade.status')
       .getRawMany<{ status: TradeStatus; count: string }>();
 
     return rows.map((row) => ({ status: row.status, count: Number(row.count) }));
   }
 
-  private async timelineFiltered(tvTicker: string): Promise<{ date: string; trades: number }[]> {
-    const rows = await this.tradeLogRepository
-      .createQueryBuilder('trade')
-      .select("TO_CHAR(trade.createdAt, 'YYYY-MM-DD')", 'date')
-      .addSelect('COUNT(*)', 'trades')
-      .where('trade.tvTicker = :tvTicker', { tvTicker })
-      .andWhere('trade.status IN (:...statuses)', { statuses: EXECUTED_STATUSES })
+  private async timelineFiltered(
+    tvTicker: string,
+    filter: StatsFilterOptions,
+  ): Promise<{ date: string; trades: number }[]> {
+    const rows = await applyStatsFilters(
+      this.tradeLogRepository
+        .createQueryBuilder('trade')
+        .select("TO_CHAR(trade.createdAt, 'YYYY-MM-DD')", 'date')
+        .addSelect('COUNT(*)', 'trades')
+        .where('trade.tvTicker = :tvTicker', { tvTicker })
+        .andWhere('trade.status IN (:...statuses)', { statuses: EXECUTED_STATUSES }),
+      filter,
+    )
       .groupBy('date')
       .orderBy('date', 'ASC')
       .getRawMany<{ date: string; trades: string }>();
@@ -224,11 +298,19 @@ export class StatsService {
     return rows.map((row) => ({ date: row.date, trades: Number(row.trades) }));
   }
 
-  private async entryPricesFiltered(tvTicker: string): Promise<{ date: string; price: number }[]> {
-    const trades = await this.tradeLogRepository.find({
-      where: { tvTicker, status: In(EXECUTED_STATUSES) },
-      order: { createdAt: 'ASC' },
-    });
+  private async entryPricesFiltered(
+    tvTicker: string,
+    filter: StatsFilterOptions,
+  ): Promise<{ date: string; price: number }[]> {
+    const trades = await applyStatsFilters(
+      this.tradeLogRepository
+        .createQueryBuilder('trade')
+        .where('trade.tvTicker = :tvTicker', { tvTicker })
+        .andWhere('trade.status IN (:...statuses)', { statuses: EXECUTED_STATUSES }),
+      filter,
+    )
+      .orderBy('trade.createdAt', 'ASC')
+      .getMany();
 
     return trades.map((trade) => ({
       date: trade.createdAt.toISOString(),
@@ -238,13 +320,17 @@ export class StatsService {
 
   private async investedOverTimeFiltered(
     tvTicker: string,
+    filter: StatsFilterOptions,
   ): Promise<{ date: string; invested: number }[]> {
-    const rows = await this.tradeLogRepository
-      .createQueryBuilder('trade')
-      .select("TO_CHAR(trade.createdAt, 'YYYY-MM-DD')", 'date')
-      .addSelect('COALESCE(SUM(trade.investmentAmount), 0)', 'invested')
-      .where('trade.tvTicker = :tvTicker', { tvTicker })
-      .andWhere('trade.status = :status', { status: TradeStatus.SUCCESS })
+    const rows = await applyStatsFilters(
+      this.tradeLogRepository
+        .createQueryBuilder('trade')
+        .select("TO_CHAR(trade.createdAt, 'YYYY-MM-DD')", 'date')
+        .addSelect('COALESCE(SUM(trade.investmentAmount), 0)', 'invested')
+        .where('trade.tvTicker = :tvTicker', { tvTicker })
+        .andWhere('trade.status = :status', { status: TradeStatus.SUCCESS }),
+      filter,
+    )
       .groupBy('date')
       .orderBy('date', 'ASC')
       .getRawMany<{ date: string; invested: string }>();

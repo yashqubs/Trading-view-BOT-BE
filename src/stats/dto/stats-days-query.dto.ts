@@ -1,17 +1,13 @@
 import { Type } from 'class-transformer';
 import { IsInt, IsOptional, IsString, Matches, Max, Min } from 'class-validator';
 
-export class DailyActivityQueryDto {
+export class StatsDaysQueryDto {
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
   @Max(365)
   days?: number;
-
-  @IsOptional()
-  @IsString()
-  ticker?: string;
 
   @IsOptional()
   @IsString()

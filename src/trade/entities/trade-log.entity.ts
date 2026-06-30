@@ -27,6 +27,33 @@ export class TradeLog {
   })
   investmentAmount: string | null;
 
+  @Column({
+    type: 'decimal',
+    precision: 15,
+    scale: 4,
+    nullable: true,
+    name: 'closing_price',
+  })
+  closingPrice: string | null;
+
+  @Column({
+    type: 'decimal',
+    precision: 15,
+    scale: 2,
+    nullable: true,
+    name: 'profit_loss',
+  })
+  profitLoss: string | null;
+
+  @Column({
+    type: 'decimal',
+    precision: 8,
+    scale: 4,
+    nullable: true,
+    name: 'profit_loss_pct',
+  })
+  profitLossPct: string | null;
+
   @Column({ type: 'decimal', precision: 12, scale: 4, nullable: true })
   quantity: string | null;
 

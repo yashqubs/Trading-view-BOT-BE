@@ -1,7 +1,7 @@
 import { Type } from 'class-transformer';
 import { IsInt, IsOptional, IsString, Matches, Max, Min } from 'class-validator';
 
-export class DailyActivityQueryDto {
+export class StatsFilterQueryDto {
   @IsOptional()
   @Type(() => Number)
   @IsInt()
