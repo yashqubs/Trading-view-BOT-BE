@@ -5,9 +5,11 @@ import {
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
 import { Repository } from 'typeorm';
+import { EmailService } from '../email/email.service';
 import { UserRole } from '../common/enums';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { CreateUserDto } from './dto/create-user.dto';
@@ -28,7 +30,11 @@ export interface ResetPasswordResult {
 
 @Injectable()
 export class UserService {
-  constructor(@InjectRepository(User) private readonly userRepository: Repository<User>) {}
+  constructor(
+    @InjectRepository(User) private readonly userRepository: Repository<User>,
+    private readonly emailService: EmailService,
+    private readonly configService: ConfigService,
+  ) {}
 
   findAll(): Promise<User[]> {
     return this.userRepository.find({ order: { createdAt: 'ASC' } });
@@ -55,11 +61,17 @@ export class UserService {
       role: dto.role,
       passwordHash: await bcrypt.hash(tempPassword, BCRYPT_COST),
       mustChangePassword: true,
-      totpEnabled: false,
+      twoFactorEnabled: false,
       active: true,
     });
 
     const saved = await this.userRepository.save(user);
+    await this.emailService.sendInviteEmail(
+      saved.email,
+      saved.name,
+      tempPassword,
+      this.portalUrl(),
+    );
     return { user: saved, tempPassword };
   }
 
@@ -94,6 +106,12 @@ export class UserService {
     user.mustChangePassword = true;
     const saved = await this.userRepository.save(user);
 
+    await this.emailService.sendPasswordResetEmail(
+      saved.email,
+      saved.name,
+      tempPassword,
+      this.portalUrl(),
+    );
     return { user: saved, tempPassword };
   }
 
@@ -109,7 +127,7 @@ export class UserService {
     return this.userRepository.save(user);
   }
 
-  async changeOwnPassword(userId: string, dto: ChangePasswordDto): Promise<void> {
+  async changeOwnPassword(userId: string, dto: ChangePasswordDto): Promise<User> {
     const user = await this.findByIdOrThrow(userId);
     const matches = await bcrypt.compare(dto.currentPassword, user.passwordHash);
     if (!matches) {
@@ -118,7 +136,7 @@ export class UserService {
 
     user.passwordHash = await bcrypt.hash(dto.newPassword, BCRYPT_COST);
     user.mustChangePassword = false;
-    await this.userRepository.save(user);
+    return this.userRepository.save(user);
   }
 
   private async assertAnotherActiveAdminExists(excludingUserId: string): Promise<void> {
@@ -136,5 +154,9 @@ export class UserService {
 
   private generateTempPassword(): string {
     return randomBytes(9).toString('base64url');
+  }
+
+  private portalUrl(): string {
+    return this.configService.get<string>('FRONTEND_ORIGIN') ?? '';
   }
 }

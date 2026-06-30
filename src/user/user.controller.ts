@@ -1,4 +1,5 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Res, UseGuards } from '@nestjs/common';
+import { Response } from 'express';
 import { AllowPendingSession } from '../common/decorators/allow-pending-session.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Roles } from '../common/decorators/roles.decorator';
@@ -6,6 +7,7 @@ import { UserRole } from '../common/enums';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
+import { SessionService } from '../auth/session/session.service';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -15,7 +17,10 @@ import { CreatedUserResult, ResetPasswordResult, UserService } from './user.serv
 @Controller('users')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class UserController {
-  constructor(private readonly userService: UserService) {}
+  constructor(
+    private readonly userService: UserService,
+    private readonly sessionService: SessionService,
+  ) {}
 
   @Get()
   @Roles(UserRole.ADMIN)
@@ -31,11 +36,16 @@ export class UserController {
 
   @Patch('me/password')
   @AllowPendingSession()
-  changeOwnPassword(
+  async changeOwnPassword(
     @CurrentUser() user: AuthenticatedUser,
     @Body() dto: ChangePasswordDto,
+    @Res({ passthrough: true }) response: Response,
   ): Promise<void> {
-    return this.userService.changeOwnPassword(user.id, dto);
+    const updated = await this.userService.changeOwnPassword(user.id, dto);
+    // Upgrades a pending (forced-password-change) session straight to a full
+    // one — without this the just-onboarded user stays stuck behind
+    // JwtAuthGuard's pending check until the old cookie expires.
+    this.sessionService.issueCookie(updated, response, false);
   }
 
   @Post()

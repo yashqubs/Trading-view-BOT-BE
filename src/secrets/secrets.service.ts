@@ -13,7 +13,6 @@ const SECRET_KEYS: SecretKey[] = [
   'DB_PASSWORD',
   'JWT_SECRET',
   'WEBHOOK_SECRET',
-  'TOTP_ENCRYPTION_KEY',
 ];
 
 /**

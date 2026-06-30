@@ -11,6 +11,7 @@ import { StatsDaysQueryDto } from './dto/stats-days-query.dto';
 import { StatsFilterQueryDto } from './dto/stats-filter-query.dto';
 import {
   DailyActivityPoint,
+  OpenPosition,
   OverviewStats,
   StatusBreakdownPoint,
   StockActivity,
@@ -138,6 +139,29 @@ export class StatsService {
       trades: Number(row.trades),
       invested: Number(row.invested),
     }));
+  }
+
+  async openPositions(ticker?: string): Promise<OpenPosition[]> {
+    const [positions, mappings] = await Promise.all([
+      this.igClientService.getOpenPositions(),
+      this.mappingService.findAll(),
+    ]);
+
+    const byEpic = new Map(mappings.map((mapping) => [mapping.igEpic, mapping]));
+
+    return positions
+      .map((position) => {
+        const mapping = byEpic.get(position.epic);
+        return {
+          tvTicker: mapping?.tvTicker ?? position.epic,
+          instrumentName: mapping?.instrumentName ?? position.epic,
+          igEpic: position.epic,
+          direction: position.direction,
+          size: position.size,
+          mapped: !!mapping,
+        };
+      })
+      .filter((position) => !ticker || position.tvTicker === ticker);
   }
 
   async byStock(query: StatsDaysQueryDto = {}): Promise<StockActivity[]> {

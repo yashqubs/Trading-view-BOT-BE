@@ -1,50 +1,48 @@
-import { BadRequestException, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { JwtService } from '@nestjs/jwt';
+import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
 import { Response } from 'express';
-import { authenticator } from '@otplib/v12-adapter';
-import * as QRCode from 'qrcode';
 import { Repository } from 'typeorm';
-import { SecretsService } from '../secrets/secrets.service';
+import { JwtService } from '@nestjs/jwt';
+import { EmailService } from '../email/email.service';
 import { Login2faDto } from './dto/login-2fa.dto';
 import { LoginDto } from './dto/login.dto';
+import { ResendOtpDto } from './dto/resend-otp.dto';
+import { Disable2faDto } from './dto/disable-2fa.dto';
 import { Verify2faDto } from './dto/verify-2fa.dto';
 import { User } from '../user/entities/user.entity';
 import { JwtPayload } from './interfaces/jwt-payload.interface';
+import { SessionService } from './session/session.service';
 import { TokenBlacklistService } from './token-blacklist.service';
-import { decrypt, encrypt } from './utils/encryption.util';
-import { generateRecoveryCodes } from './utils/recovery-codes.util';
+import { generateOtp, hashOtp, maskEmail } from './utils/otp.util';
 
 const BCRYPT_COST = 12;
 const MAX_FAILED_ATTEMPTS = 5;
 const LOCKOUT_DURATION_MS = 15 * 60 * 1000;
-const SESSION_EXPIRY = '1h';
-const SESSION_COOKIE_MAX_AGE_MS = 60 * 60 * 1000;
-const PENDING_SESSION_EXPIRY = '15m';
-const PENDING_SESSION_COOKIE_MAX_AGE_MS = 15 * 60 * 1000;
+const OTP_EXPIRY_MS = 10 * 60 * 1000;
+const OTP_RESEND_COOLDOWN_MS = 30 * 1000;
+const OTP_MAX_ATTEMPTS = 5;
 
 export interface LoginChallengeResult {
-  requiresSetup2fa: boolean;
+  requiresPasswordChange: boolean;
   requires2fa: boolean;
+  message?: string;
+  user?: User;
 }
 
-export interface Setup2faResult {
-  qrCodeUri: string;
-  recoveryCodes: string[];
+export interface OtpSentResult {
+  message: string;
+  maskedEmail: string;
 }
 
 @Injectable()
 export class AuthService {
-  private readonly logger = new Logger(AuthService.name);
-
   constructor(
     @InjectRepository(User) private readonly userRepository: Repository<User>,
     private readonly jwtService: JwtService,
-    private readonly secretsService: SecretsService,
+    private readonly emailService: EmailService,
+    private readonly sessionService: SessionService,
     private readonly tokenBlacklistService: TokenBlacklistService,
-    private readonly configService: ConfigService,
   ) {}
 
   static hashPassword(password: string): Promise<string> {
@@ -52,77 +50,94 @@ export class AuthService {
   }
 
   /**
-   * Validates credentials and issues a restricted "pending" session cookie
-   * immediately — scoped (see JwtAuthGuard + @AllowPendingSession) to only
-   * GET /auth/me, the 2FA setup/verify endpoints, PATCH /users/me/password,
-   * and logout, until 2FA is confirmed. Knowing the password alone never
-   * grants access to anything else.
+   * Orchestrates the three possible outcomes of a credentials check:
+   * forced password change (pending cookie, nothing else revealed yet),
+   * email-OTP challenge (no cookie until the code is verified), or a
+   * full session immediately.
    */
   async login(dto: LoginDto, response: Response): Promise<LoginChallengeResult> {
     const user = await this.validateCredentials(dto.email, dto.password);
-    this.issueCookie(user, response, true);
 
-    return {
-      requiresSetup2fa: !user.totpEnabled,
-      requires2fa: user.totpEnabled,
-    };
-  }
-
-  async setup2fa(userId: string): Promise<Setup2faResult> {
-    const user = await this.userRepository.findOneByOrFail({ id: userId });
-    if (user.totpEnabled) {
-      throw new BadRequestException('2FA is already enabled for this account');
+    if (user.mustChangePassword) {
+      this.sessionService.issueCookie(user, response, true);
+      return { requiresPasswordChange: true, requires2fa: false };
     }
 
-    const encryptionKey = this.secretsService.get('TOTP_ENCRYPTION_KEY');
-    const secret = authenticator.generateSecret();
-    const recoveryCodes = generateRecoveryCodes();
-
-    user.totpSecret = encrypt(secret, encryptionKey);
-    user.recoveryCodes = encrypt(JSON.stringify(recoveryCodes), encryptionKey);
-    await this.userRepository.save(user);
-
-    const qrCodeUri = await QRCode.toDataURL(
-      authenticator.keyuri(user.email, 'TradingBot', secret),
-    );
-
-    return { qrCodeUri, recoveryCodes };
-  }
-
-  async verify2faSetup(userId: string, dto: Verify2faDto, response: Response): Promise<User> {
-    const user = await this.userRepository.findOneByOrFail({ id: userId });
-    if (!user.totpSecret) {
-      throw new BadRequestException('2FA setup has not been started for this account');
+    if (user.twoFactorEnabled) {
+      await this.issueOtp(user, 'LOGIN');
+      return {
+        requiresPasswordChange: false,
+        requires2fa: true,
+        message: `Code sent to ${maskEmail(user.email)}`,
+      };
     }
 
-    const isValid = await this.verifyAndConsumeCode(user, dto.code);
-    if (!isValid) {
-      throw new UnauthorizedException('Invalid 2FA code');
-    }
-
-    user.totpEnabled = true;
     user.lastLoginAt = new Date();
     await this.userRepository.save(user);
-
-    this.issueCookie(user, response, false);
-    return user;
+    this.sessionService.issueCookie(user, response, false);
+    return { requiresPasswordChange: false, requires2fa: false, user };
   }
 
   async loginWith2fa(dto: Login2faDto, response: Response): Promise<User> {
     const user = await this.validateCredentials(dto.email, dto.password);
-    if (!user.totpEnabled) {
-      throw new BadRequestException('2FA is not set up for this account');
+    if (!user.twoFactorEnabled) {
+      throw new BadRequestException('Two-factor authentication is not enabled for this account');
     }
 
-    const isValid = await this.verifyAndConsumeCode(user, dto.code);
-    if (!isValid) {
-      throw new UnauthorizedException('Invalid 2FA code');
-    }
+    await this.verifyOtp(user, dto.code, 'LOGIN');
 
     user.lastLoginAt = new Date();
     await this.userRepository.save(user);
+    this.sessionService.issueCookie(user, response, false);
+    return user;
+  }
 
-    this.issueCookie(user, response, false);
+  async resendLoginOtp(dto: ResendOtpDto): Promise<OtpSentResult> {
+    const user = await this.validateCredentials(dto.email, dto.password);
+    if (!user.twoFactorEnabled) {
+      throw new BadRequestException('Two-factor authentication is not enabled for this account');
+    }
+    return this.issueOtp(user, 'LOGIN');
+  }
+
+  async setup2fa(userId: string): Promise<OtpSentResult> {
+    const user = await this.userRepository.findOneByOrFail({ id: userId });
+    if (user.twoFactorEnabled) {
+      throw new BadRequestException(
+        'Two-factor authentication is already enabled for this account',
+      );
+    }
+    return this.issueOtp(user, 'SETUP');
+  }
+
+  async resendSetupOtp(userId: string): Promise<OtpSentResult> {
+    const user = await this.userRepository.findOneByOrFail({ id: userId });
+    return this.issueOtp(user, 'SETUP');
+  }
+
+  async verify2faSetup(userId: string, dto: Verify2faDto): Promise<User> {
+    const user = await this.userRepository.findOneByOrFail({ id: userId });
+    await this.verifyOtp(user, dto.code, 'SETUP');
+
+    user.twoFactorEnabled = true;
+    await this.userRepository.save(user);
+    return user;
+  }
+
+  async skip2fa(userId: string): Promise<User> {
+    return this.userRepository.findOneByOrFail({ id: userId });
+  }
+
+  async disable2fa(userId: string, dto: Disable2faDto): Promise<User> {
+    const user = await this.userRepository.findOneByOrFail({ id: userId });
+    const passwordMatches = await bcrypt.compare(dto.password, user.passwordHash);
+    if (!passwordMatches) {
+      throw new UnauthorizedException('Incorrect password');
+    }
+
+    user.twoFactorEnabled = false;
+    this.clearOtp(user);
+    await this.userRepository.save(user);
     return user;
   }
 
@@ -132,50 +147,65 @@ export class AuthService {
         const payload = this.jwtService.decode(token) as (JwtPayload & { exp: number }) | null;
         const expiresAt = payload?.exp ? new Date(payload.exp * 1000) : new Date();
         await this.tokenBlacklistService.blacklist(token, expiresAt);
-      } catch (error) {
-        this.logger.warn('Failed to blacklist token on logout', (error as Error).message);
+      } catch {
+        // best-effort — an undecodable token can't be replayed anyway
       }
     }
-    response.clearCookie('access_token');
+    this.sessionService.clearCookie(response);
   }
 
-  private issueCookie(user: User, response: Response, pending: boolean): void {
-    const payload: JwtPayload = { sub: user.id, email: user.email, role: user.role, pending };
-    const token = this.jwtService.sign(payload, {
-      secret: this.secretsService.get('JWT_SECRET'),
-      expiresIn: pending ? PENDING_SESSION_EXPIRY : SESSION_EXPIRY,
-    });
-
-    response.cookie('access_token', token, {
-      httpOnly: true,
-      secure: this.configService.get<string>('NODE_ENV') === 'production',
-      sameSite: 'strict',
-      maxAge: pending ? PENDING_SESSION_COOKIE_MAX_AGE_MS : SESSION_COOKIE_MAX_AGE_MS,
-    });
-  }
-
-  private async verifyAndConsumeCode(user: User, code: string): Promise<boolean> {
-    const encryptionKey = this.secretsService.get('TOTP_ENCRYPTION_KEY');
-    const secret = decrypt(user.totpSecret as string, encryptionKey);
-
-    if (authenticator.check(code, secret)) {
-      return true;
+  private async issueOtp(user: User, purpose: 'LOGIN' | 'SETUP'): Promise<OtpSentResult> {
+    if (user.otpLastSentAt && Date.now() - user.otpLastSentAt.getTime() < OTP_RESEND_COOLDOWN_MS) {
+      throw new BadRequestException('Please wait before requesting another code');
     }
 
-    if (!user.recoveryCodes) {
-      return false;
-    }
-
-    const recoveryCodes: string[] = JSON.parse(decrypt(user.recoveryCodes, encryptionKey));
-    const matchIndex = recoveryCodes.indexOf(code.toUpperCase());
-    if (matchIndex === -1) {
-      return false;
-    }
-
-    recoveryCodes.splice(matchIndex, 1);
-    user.recoveryCodes = encrypt(JSON.stringify(recoveryCodes), encryptionKey);
+    const code = generateOtp();
+    user.otpCodeHash = hashOtp(code);
+    user.otpExpiresAt = new Date(Date.now() + OTP_EXPIRY_MS);
+    user.otpPurpose = purpose;
+    user.otpAttempts = 0;
+    user.otpLastSentAt = new Date();
     await this.userRepository.save(user);
-    return true;
+
+    await this.emailService.sendOtpEmail(user.email, code, purpose);
+
+    return {
+      message: `Code sent to ${maskEmail(user.email)}`,
+      maskedEmail: maskEmail(user.email),
+    };
+  }
+
+  private async verifyOtp(user: User, code: string, purpose: 'LOGIN' | 'SETUP'): Promise<void> {
+    const invalid = new UnauthorizedException('Invalid or expired code');
+
+    if (
+      !user.otpCodeHash ||
+      user.otpPurpose !== purpose ||
+      !user.otpExpiresAt ||
+      user.otpExpiresAt.getTime() < Date.now()
+    ) {
+      throw invalid;
+    }
+
+    if (user.otpCodeHash !== hashOtp(code)) {
+      user.otpAttempts += 1;
+      if (user.otpAttempts >= OTP_MAX_ATTEMPTS) {
+        this.clearOtp(user);
+      }
+      await this.userRepository.save(user);
+      throw invalid;
+    }
+
+    this.clearOtp(user);
+    await this.userRepository.save(user);
+  }
+
+  private clearOtp(user: User): void {
+    user.otpCodeHash = null;
+    user.otpExpiresAt = null;
+    user.otpPurpose = null;
+    user.otpAttempts = 0;
+    user.otpLastSentAt = null;
   }
 
   private async validateCredentials(email: string, password: string): Promise<User> {

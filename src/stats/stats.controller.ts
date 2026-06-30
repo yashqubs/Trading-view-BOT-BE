@@ -4,10 +4,12 @@ import { UserRole } from '../common/enums';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { DailyActivityQueryDto } from './dto/daily-activity-query.dto';
+import { OpenPositionsQueryDto } from './dto/open-positions-query.dto';
 import { StatsDaysQueryDto } from './dto/stats-days-query.dto';
 import { StatsFilterQueryDto } from './dto/stats-filter-query.dto';
 import {
   DailyActivityPoint,
+  OpenPosition,
   OverviewStats,
   StatusBreakdownPoint,
   StockActivity,
@@ -34,6 +36,11 @@ export class StatsController {
   @Get('by-stock')
   byStock(@Query() query: StatsDaysQueryDto): Promise<StockActivity[]> {
     return this.statsService.byStock(query);
+  }
+
+  @Get('open-positions')
+  openPositions(@Query() query: OpenPositionsQueryDto): Promise<OpenPosition[]> {
+    return this.statsService.openPositions(query.ticker);
   }
 
   @Get('status-breakdown')

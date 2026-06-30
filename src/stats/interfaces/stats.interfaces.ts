@@ -1,4 +1,4 @@
-import { TradeStatus } from '../../common/enums';
+import { Direction, TradeStatus } from '../../common/enums';
 
 export interface OverviewStats {
   botEnabled: boolean;
@@ -30,6 +30,16 @@ export interface StockActivity {
 export interface StatusBreakdownPoint {
   status: TradeStatus;
   count: number;
+}
+
+export interface OpenPosition {
+  tvTicker: string;
+  instrumentName: string;
+  igEpic: string;
+  direction: Direction;
+  size: number;
+  /** False if IG reports a position for an epic that has no (or no longer has an) active stock_mapping row. */
+  mapped: boolean;
 }
 
 export interface StockStats {

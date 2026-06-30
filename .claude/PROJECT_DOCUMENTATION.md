@@ -78,7 +78,7 @@ When a TradingView indicator fires a green (buy) or red (sell) signal, the bot a
 | ORM | TypeORM | Native NestJS support |
 | Database | PostgreSQL on EC2 (self-hosted) | Cost saving; with backup strategy (see Section 17) |
 | HTTP client | NestJS Axios module | IG API calls |
-| Authentication | JWT + bcrypt + TOTP 2FA | Portal login security |
+| Authentication | JWT + bcrypt + optional email-OTP 2FA | Portal login security |
 | Secrets | AWS Secrets Manager | IG credentials never on disk |
 | Rate limiting | NestJS Throttler | Brute force / DoS protection |
 | Security headers | Helmet.js | HTTP security headers |
@@ -221,19 +221,20 @@ When a TradingView indicator fires a green (buy) or red (sell) signal, the bot a
 | Control | Value | Reason |
 |---|---|---|
 | Password hashing | bcrypt cost 12 | Plain text never stored |
-| **2FA (TOTP)** | **Required on all accounts (IMPLEMENTED)** | **Stolen password alone is not enough** |
-| JWT expiry | 1 hour access token | Limits exposure window |
+| **2FA (email OTP)** | **Optional, user opt-in (IMPLEMENTED)** | **Stolen password alone is not enough, for accounts that enable it** |
+| JWT expiry | 1 hour access token (15 min while a password change is pending) | Limits exposure window |
 | Token storage | HttpOnly + Secure + SameSite=Strict cookie | Prevents XSS theft + CSRF |
 | Brute force lockout | 5 attempts / 15 min then locked | Stops password guessing |
 | Token blacklist | Invalidated on logout | Stolen token cannot be reused |
 
 #### 2FA Implementation (Implemented)
 
-- On first login, the user is shown a QR code to scan with Google Authenticator / Authy
-- The TOTP secret is generated server-side and stored encrypted in the database
-- Every subsequent login requires email + password + 6-digit TOTP code
-- Recovery codes (10 single-use codes) are generated at setup for account recovery
-- 2FA secret and recovery codes are encrypted at rest using a key from AWS Secrets Manager
+- Two-factor authentication is **optional**: after the forced first-login password change, the user is asked whether to enable it, and can enable/disable it any time from Settings
+- When enabled, a 6-digit code is emailed to the user's address on every login, and on the setup/disable confirmation step
+- Codes expire after 10 minutes, can be resent after a 30-second cooldown, and lock out after 5 wrong attempts (forcing a resend)
+- Disabling 2FA requires re-entering the account password
+- Codes are sent via AWS SES, authorized through the EC2 instance's IAM role — no SES credentials are stored anywhere
+- Only a salted hash of the current OTP is stored, with a short expiry; there is no long-lived secret to protect (unlike the TOTP approach this replaced), so nothing OTP-related needs encryption at rest
 
 ### Layer 5 — Secrets Management (Implemented)
 
@@ -244,7 +245,6 @@ When a TradingView indicator fires a green (buy) or red (sell) signal, the bot a
 | IG API key, username, password | AWS Secrets Manager |
 | JWT signing secret | AWS Secrets Manager |
 | Webhook secret | AWS Secrets Manager |
-| 2FA encryption key | AWS Secrets Manager |
 | Database password | AWS Secrets Manager |
 
 How it works:
@@ -253,6 +253,7 @@ How it works:
 - The `.env` file on the server contains only non-sensitive config (PORT, NODE_ENV, AWS region, secret names)
 - IAM role grants the EC2 instance read-only access to only the specific secrets it needs
 - Secret rotation is possible without redeploying — the app re-fetches on a schedule
+- Outbound email (OTP codes, invite/reset emails) goes through AWS SES, authorized via that same EC2 IAM role — no SES API keys exist to manage or rotate
 
 ### Layer 6 — Database & Backup Security
 
@@ -310,9 +311,9 @@ A simple user management system so an admin can create additional portal users w
 
 1. Admin goes to Users page → clicks "Add User"
 2. Enters: name, email, role (Admin / Viewer)
-3. System generates a temporary password and shows it once
+3. System generates a temporary password, shows it once to the admin, and emails the new user an invite (temp password + portal link)
 4. New user logs in with the temp password
-5. On first login, user is forced to set a new password and set up 2FA
+5. On first login, the user is forced to set a new password, then can optionally enable two-factor authentication
 6. Done — minimal friction
 
 ### User Table Behaviour
@@ -335,7 +336,8 @@ A simple user management system so an admin can create additional portal users w
 | DB_HOST | Always localhost | 127.0.0.1 |
 | DB_PORT | PostgreSQL port | 5432 |
 | DB_NAME | Database name | trading_view_bot |
-| FRONTEND_ORIGIN | Portal URL (CORS) | https://portal.your-domain.com |
+| FRONTEND_ORIGIN | Portal URL (CORS + emailed portal links) | https://portal.your-domain.com |
+| EMAIL_FROM | Verified SES sender identity | no-reply@your-domain.com |
 | SECRET_NAME_IG | Secrets Manager key name | prod/trading-bot/ig |
 | SECRET_NAME_APP | Secrets Manager key name | prod/trading-bot/app |
 
@@ -347,7 +349,6 @@ A simple user management system so an admin can create additional portal users w
 | DB_PASSWORD | prod/trading-bot/app |
 | JWT_SECRET | prod/trading-bot/app |
 | WEBHOOK_SECRET | prod/trading-bot/app |
-| TOTP_ENCRYPTION_KEY | prod/trading-bot/app |
 
 ---
 
@@ -373,9 +374,12 @@ A simple user management system so an admin can create additional portal users w
 | password_hash | VARCHAR(255) | bcrypt cost 12 |
 | role | VARCHAR(20) | ADMIN or VIEWER |
 | active | BOOLEAN | Soft delete flag, default true |
-| totp_secret | VARCHAR(255), Nullable | Encrypted TOTP secret |
-| totp_enabled | BOOLEAN | Default false until 2FA set up |
-| recovery_codes | TEXT, Nullable | Encrypted JSON array of codes |
+| two_factor_enabled | BOOLEAN | Default false; user opts in after first login or via Settings |
+| otp_code_hash | VARCHAR(64), Nullable | SHA-256 hash of the current email OTP |
+| otp_expires_at | TIMESTAMP, Nullable | OTP expiry (10 min from send) |
+| otp_purpose | VARCHAR(10), Nullable | LOGIN or SETUP |
+| otp_attempts | INTEGER | Wrong-code counter; OTP invalidated after 5 |
+| otp_last_sent_at | TIMESTAMP, Nullable | Drives the 30s resend cooldown |
 | must_change_password | BOOLEAN | True for new users, forces reset on first login |
 | failed_login_attempts | INTEGER | Brute force counter |
 | locked_until | TIMESTAMP, Nullable | Set when locked |
@@ -510,10 +514,14 @@ Investment amount, max daily spend per stock, cool-down minutes, max open positi
 
 | Method | Path | Description |
 |---|---|---|
-| POST | /auth/login | Email + password → returns 2FA challenge |
-| POST | /auth/login/2fa | Email + password + TOTP code → JWT cookie |
-| POST | /auth/2fa/setup | Generate QR + recovery codes (first login) |
-| POST | /auth/2fa/verify | Confirm 2FA setup with first code |
+| POST | /auth/login | Email + password → forced password change, email-OTP challenge, or a full session |
+| POST | /auth/login/2fa | Email + password + emailed code → JWT cookie |
+| POST | /auth/login/2fa/resend | Re-send the login OTP (30s cooldown) |
+| POST | /auth/2fa/setup | Email an OTP to confirm enabling 2FA |
+| POST | /auth/2fa/resend | Re-send the setup OTP (30s cooldown) |
+| POST | /auth/2fa/verify | Confirm 2FA setup with the emailed code |
+| POST | /auth/2fa/skip | Acknowledge skipping 2FA setup during onboarding |
+| POST | /auth/2fa/disable | Disable 2FA (requires password confirmation) |
 | POST | /auth/logout | Blacklist token, clear cookie |
 | GET | /auth/me | Current user |
 

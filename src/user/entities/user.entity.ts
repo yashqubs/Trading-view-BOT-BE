@@ -29,16 +29,24 @@ export class User {
   @Column({ type: 'boolean', default: true })
   active: boolean;
 
-  @Exclude()
-  @Column({ type: 'varchar', length: 255, nullable: true, name: 'totp_secret' })
-  totpSecret: string | null;
-
-  @Column({ type: 'boolean', default: false, name: 'totp_enabled' })
-  totpEnabled: boolean;
+  @Column({ type: 'boolean', default: false, name: 'two_factor_enabled' })
+  twoFactorEnabled: boolean;
 
   @Exclude()
-  @Column({ type: 'text', nullable: true, name: 'recovery_codes' })
-  recoveryCodes: string | null;
+  @Column({ type: 'varchar', length: 64, nullable: true, name: 'otp_code_hash' })
+  otpCodeHash: string | null;
+
+  @Column({ type: 'timestamptz', nullable: true, name: 'otp_expires_at' })
+  otpExpiresAt: Date | null;
+
+  @Column({ type: 'varchar', length: 10, nullable: true, name: 'otp_purpose' })
+  otpPurpose: 'LOGIN' | 'SETUP' | null;
+
+  @Column({ type: 'int', default: 0, name: 'otp_attempts' })
+  otpAttempts: number;
+
+  @Column({ type: 'timestamptz', nullable: true, name: 'otp_last_sent_at' })
+  otpLastSentAt: Date | null;
 
   @Column({ type: 'boolean', default: true, name: 'must_change_password' })
   mustChangePassword: boolean;

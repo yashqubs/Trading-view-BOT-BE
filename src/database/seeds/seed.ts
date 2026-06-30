@@ -27,7 +27,7 @@ async function seed(): Promise<void> {
       passwordHash: await bcrypt.hash(tempPassword, BCRYPT_COST),
       role: UserRole.ADMIN,
       active: true,
-      totpEnabled: false,
+      twoFactorEnabled: false,
       mustChangePassword: true,
     });
     await userRepository.save(admin);
@@ -39,7 +39,7 @@ async function seed(): Promise<void> {
     console.log(`  password: ${tempPassword}`);
 
     console.log(
-      'Record this password now — it will not be shown again. The user must change it and set up 2FA on first login.',
+      'Record this password now — it will not be shown again. The user must change it on first login, then can optionally enable two-factor authentication.',
     );
   } else {
     console.log('An admin user already exists — skipping admin creation.');

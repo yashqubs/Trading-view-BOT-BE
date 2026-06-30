@@ -9,6 +9,6 @@ export class Login2faDto {
   password: string;
 
   @IsString()
-  @Length(6, 10)
+  @Length(6, 6)
   code: string;
 }
