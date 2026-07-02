@@ -115,6 +115,36 @@ export class UserService {
     return { user: saved, tempPassword };
   }
 
+  /**
+   * Self-service "forgot password" — reuses the exact same mechanism as the
+   * admin-triggered resetPassword() above (new temp password, forced change
+   * on next login), just looked up by email instead of an authenticated
+   * admin picking a user ID.
+   *
+   * Deliberately returns void, always, with no indication of whether the
+   * email matched an account — the caller (AuthController) sends the same
+   * generic response either way. Doing otherwise (e.g. throwing NotFound)
+   * would let this endpoint be used to enumerate registered email addresses.
+   */
+  async resetPasswordByEmail(email: string): Promise<void> {
+    const user = await this.userRepository.findOne({ where: { email } });
+    if (!user || !user.active) {
+      return;
+    }
+
+    const tempPassword = this.generateTempPassword();
+    user.passwordHash = await bcrypt.hash(tempPassword, BCRYPT_COST);
+    user.mustChangePassword = true;
+    const saved = await this.userRepository.save(user);
+
+    await this.emailService.sendPasswordResetEmail(
+      saved.email,
+      saved.name,
+      tempPassword,
+      this.portalUrl(),
+    );
+  }
+
   async deactivate(id: string, currentUserId: string): Promise<User> {
     if (id === currentUserId) {
       throw new BadRequestException('You cannot deactivate your own account');

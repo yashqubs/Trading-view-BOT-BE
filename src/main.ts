@@ -13,6 +13,12 @@ async function bootstrap(): Promise<void> {
   const configService = app.get(ConfigService);
   const logger = new Logger('Bootstrap');
 
+  // PM2 sends SIGTERM on every `pm2 restart` (i.e. every deploy). Without
+  // this, Nest's lifecycle hooks (OnApplicationShutdown — see
+  // InFlightSignalTracker) never run and the process dies immediately,
+  // mid-trade if one happens to be in flight.
+  app.enableShutdownHooks();
+
   app.use(helmet());
   app.use(cookieParser());
   app.use(json({ limit: '10kb' }));

@@ -7,6 +7,7 @@ import { SignalInput } from '../trade/interfaces/signal-input.interface';
 import { TradeService } from '../trade/trade.service';
 import { TradingRules } from '../trading-rules/entities/trading-rules.entity';
 import { TradingRulesService } from '../trading-rules/trading-rules.service';
+import { InFlightSignalTracker } from './in-flight-signal-tracker.service';
 import { SignalService } from './signal.service';
 
 const IN_MARKET_HOURS = new Date('2026-06-24T15:00:00Z'); // Wednesday, inside 14:30-21:00 UTC
@@ -94,6 +95,7 @@ describe('SignalService — condition pipeline', () => {
             getOpenPositions: jest.fn().mockResolvedValue([]),
           },
         },
+        InFlightSignalTracker,
       ],
     }).compile();
 

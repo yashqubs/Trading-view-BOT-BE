@@ -8,6 +8,7 @@ import { AuthModule } from './auth/auth.module';
 import { CommonModule } from './common/common.module';
 import { CsrfGuard } from './common/guards/csrf.guard';
 import { DatabaseModule } from './database/database.module';
+import { HealthModule } from './health/health.module';
 import { IgClientModule } from './ig-client/ig-client.module';
 import { MappingModule } from './mapping/mapping.module';
 import { RealtimeModule } from './realtime/realtime.module';
@@ -30,6 +31,7 @@ import { WebhookModule } from './webhook/webhook.module';
     CommonModule,
     SecretsModule,
     DatabaseModule,
+    HealthModule,
     AuthModule,
     UserModule,
     IgClientModule,

@@ -73,6 +73,7 @@ Trades involve real money. Correctness and safety are non-negotiable. When in do
 - `stats/` — aggregated + per-stock statistics
 - `system/` — webhook URL, IG connection status, last-received-signal status
 - `realtime/` — WebSocket gateway broadcasting domain events to the portal
+- `health/` — unauthenticated `GET /health` for uptime monitoring and deploy verification
 - `scheduler/` — token refresh + nightly backup cron
 
 ## Hard rules
@@ -116,6 +117,7 @@ Trades involve real money. Correctness and safety are non-negotiable. When in do
 - `pnpm audit --audit-level=high` — dependency vulnerability check (must pass before deploy)
 - `pnpm migration:run` — run TypeORM migrations
 - `pnpm seed` — seed first admin user + trading_rules row
+- `pnpm clear-db -- --yes` — wipe every row from every table (dev/demo only — hard-blocked when NODE_ENV=production). Run `pnpm seed` after to get back to a working state
 
 ## What to do before considering a task done
 

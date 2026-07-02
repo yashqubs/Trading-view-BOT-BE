@@ -66,3 +66,12 @@ jobs:
             pnpm build
             pm2 restart trading_view_bot --update-env
             pm2 save
+            # Confirm the restarted process is actually serving requests
+            # (not just that `pm2 restart` didn't throw) before calling
+            # this deploy successful.
+            for i in 1 2 3 4 5; do
+              curl -sf http://127.0.0.1:${PORT:-3000}/health && exit 0
+              sleep 3
+            done
+            echo "Health check failed after restart" >&2
+            exit 1

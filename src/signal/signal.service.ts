@@ -7,6 +7,7 @@ import { TradeLog } from '../trade/entities/trade-log.entity';
 import { SignalInput } from '../trade/interfaces/signal-input.interface';
 import { TradeService } from '../trade/trade.service';
 import { TradingRulesService } from '../trading-rules/trading-rules.service';
+import { InFlightSignalTracker } from './in-flight-signal-tracker.service';
 import { isMarketOpen } from './utils/market-hours.util';
 
 /**
@@ -45,9 +46,23 @@ export class SignalService {
     private readonly mappingService: MappingService,
     private readonly tradeService: TradeService,
     private readonly igClientService: IgClientService,
+    private readonly inFlightSignalTracker: InFlightSignalTracker,
   ) {}
 
+  // Thin wrapper so InFlightSignalTracker sees every entry/exit of the
+  // pipeline below (all its early returns included) without touching the
+  // pipeline itself — see in-flight-signal-tracker.service.ts for why this
+  // matters (SIGTERM during a deploy must not kill a signal mid-execution).
   async processSignal(input: SignalInput): Promise<TradeLog> {
+    this.inFlightSignalTracker.begin();
+    try {
+      return await this.runPipeline(input);
+    } finally {
+      this.inFlightSignalTracker.end();
+    }
+  }
+
+  private async runPipeline(input: SignalInput): Promise<TradeLog> {
     // Not one of the documented 15 pipeline steps — a technical safeguard
     // against re-processing the same webhook delivery, checked ahead of them.
     if (this.isDuplicateSignal(input)) {

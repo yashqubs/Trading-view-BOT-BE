@@ -24,7 +24,8 @@
     "migration:generate": "pnpm typeorm migration:generate -d src/database/data-source.ts",
     "migration:run": "pnpm typeorm migration:run -d src/database/data-source.ts",
     "migration:revert": "pnpm typeorm migration:revert -d src/database/data-source.ts",
-    "seed": "ts-node -r tsconfig-paths/register src/database/seeds/seed.ts"
+    "seed": "ts-node -r tsconfig-paths/register src/database/seeds/seed.ts",
+    "clear-db": "ts-node -r tsconfig-paths/register src/database/clear-db.ts"
   },
   "dependencies": {
     "@aws-sdk/client-secrets-manager": "^3.700.0",

@@ -17,6 +17,7 @@ import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { AuthService, LoginChallengeResult, OtpSentResult } from './auth.service';
 import { Disable2faDto } from './dto/disable-2fa.dto';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { Login2faDto } from './dto/login-2fa.dto';
 import { LoginDto } from './dto/login.dto';
 import { ResendOtpDto } from './dto/resend-otp.dto';
@@ -59,6 +60,17 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   resendLoginOtp(@Body() dto: ResendOtpDto): Promise<OtpSentResult> {
     return this.authService.resendLoginOtp(dto);
+  }
+
+  // Deliberately the same response whether or not the email is registered —
+  // see UserService.resetPasswordByEmail for why. Throttled at the same rate
+  // as login so it can't be used to mass-email accounts either.
+  @Post('forgot-password')
+  @Throttle(LOGIN_THROTTLE)
+  @HttpCode(HttpStatus.OK)
+  async forgotPassword(@Body() dto: ForgotPasswordDto): Promise<{ message: string }> {
+    await this.userService.resetPasswordByEmail(dto.email);
+    return { message: 'If that email is registered, we have sent password reset instructions.' };
   }
 
   @Post('2fa/setup')

@@ -318,6 +318,10 @@ A simple user management system so an admin can create additional portal users w
 5. On first login, the user is forced to set a new password, then can optionally enable two-factor authentication
 6. Done — minimal friction
 
+### Self-Service Forgot Password
+
+`POST /auth/forgot-password` (`{ email }`, no auth) lets a user request their own reset instead of waiting on an admin. It runs the exact same temp-password-and-email logic as the admin-triggered `POST /users/:id/reset-password` above (`UserService.resetPasswordByEmail`, called from `UserService.resetPassword`'s sibling), just looked up by email instead of an authenticated admin picking a user ID. The response is always the same generic message ("If that email is registered, we have sent password reset instructions.") regardless of whether the email matches an account or the account is active — this is deliberate, so the endpoint can't be used to enumerate registered emails. Throttled at the same rate as `/auth/login`.
+
 ### User Table Behaviour
 
 - Deleting a user is a soft delete (sets `active = false`) so trade history attribution is preserved
@@ -342,6 +346,7 @@ A simple user management system so an admin can create additional portal users w
 | PUBLIC_BASE_URL | This backend's own public URL — builds the webhook URL shown on Settings (`{PUBLIC_BASE_URL}/webhook/signal`) | https://api.your-domain.com |
 | TRADINGVIEW_IPS | Comma-separated webhook source IPs checked by `TradingViewIpGuard` (Section 5 Layer 3). Unset = fails closed, no signal ever gets through | 52.89.214.238,34.212.75.30,54.218.53.128,52.32.178.7 |
 | EMAIL_FROM | Verified SES sender identity | no-reply@your-domain.com |
+| SEED_ADMIN_NAME, SEED_ADMIN_EMAIL, SEED_ADMIN_PASSWORD | Optional — only read by `pnpm seed`, only on its first run. Omit the password to get a random one-time temp password printed to console instead. Never commit real values | (local .env only) |
 | SECRET_NAME_IG | Secrets Manager key name | prod/trading-bot/ig |
 | SECRET_NAME_APP | Secrets Manager key name | prod/trading-bot/app |
 
@@ -536,6 +541,7 @@ Controls the price a trade actually fills at, independent of how quantity is siz
 | StatsModule | Aggregated and per-stock statistics |
 | SystemModule | Webhook URL, IG connection status, last-received-signal status |
 | RealtimeModule | WebSocket gateway — pushes live updates to the portal |
+| HealthModule | Unauthenticated `GET /health` — DB connectivity check for uptime monitoring / deploy verification |
 | SchedulerModule | Token refresh + nightly backup cron |
 
 ### AuthModule
@@ -545,6 +551,7 @@ Controls the price a trade actually fills at, independent of how quantity is siz
 | POST | /auth/login | Email + password → forced password change, email-OTP challenge, or a full session |
 | POST | /auth/login/2fa | Email + password + emailed code → JWT cookie |
 | POST | /auth/login/2fa/resend | Re-send the login OTP (30s cooldown) |
+| POST | /auth/forgot-password | Self-service password reset by email. Always returns the same generic message regardless of whether the email is registered (enumeration-safe); reuses the admin `resetPassword` temp-password-by-email flow, not the OTP mechanism. Throttled same as login. |
 | POST | /auth/2fa/setup | Email an OTP to confirm enabling 2FA |
 | POST | /auth/2fa/resend | Re-send the setup OTP (30s cooldown) |
 | POST | /auth/2fa/verify | Confirm 2FA setup with the emailed code |
@@ -907,8 +914,8 @@ Two secrets: prod/trading-bot/ig and prod/trading-bot/app. EC2 IAM role grants r
 
 | Scenario | Impact | Recovery |
 |---|---|---|
-| Server restart / crash | No data loss (data on disk) | PM2 auto-restarts; missed signals are gone but not logged |
-| Process crash | No data loss | PM2 restarts NestJS |
+| Deploy restart (`pm2 restart`, SIGTERM) | No signal loss — `InFlightSignalTracker` + `app.enableShutdownHooks()` delay shutdown up to 15s for any in-flight signal to finish (see `ecosystem.config.js`'s `kill_timeout: 16000`, set longer than that drain so PM2 doesn't SIGKILL first) | Deploy pipeline's post-restart `/health` check confirms it came back up |
+| Hard crash (unhandled exception, OOM, SIGKILL) | Whatever signal was mid-execution at that instant is lost, not logged | PM2 auto-restarts; no data loss for anything already written |
 | Disk failure | Up to 24h of trade logs lost | Restore from S3 dump or EBS snapshot |
 | Instance terminated | Up to 24h lost | Restore from snapshot, re-attach Elastic IP |
 
@@ -943,7 +950,7 @@ If the server is down when a signal fires, TradingView's webhook fails and that 
 - [ ] Nginx reverse proxy + serve frontend build
 - [ ] Certbot SSL
 - [ ] Set up nightly S3 backup cron
-- [ ] Verify HTTPS returns 200
+- [ ] Verify HTTPS returns 200 on `GET /health` (unauthenticated — checks DB connectivity, safe to point uptime monitoring at)
 
 ### Phase 2b — CI/CD (Yash)
 
@@ -953,7 +960,7 @@ Phase 2 above is a one-time manual bootstrap. After that, both repos deploy auto
 - [ ] In both GitHub repos, add these **Actions secrets**: `EC2_HOST`, `EC2_SSH_USER`, `EC2_SSH_KEY` (the private key)
 - [ ] In both GitHub repos, add the **Actions variable** `DEPLOY_PATH` (where each repo is cloned on the server, e.g. `/opt/trading-view-bot-backend` and `/opt/trading-view-bot-frontend`)
 - [ ] Confirm the deploy user can run `pm2 restart trading_view_bot` and (for the frontend's Nginx target) `sudo cp`/`sudo systemctl reload nginx` without a password prompt (passwordless sudo scoped to those commands, or run PM2/Nginx reload as that same user)
-- [ ] Push to `main` once and confirm both the CI job and the deploy job go green in the Actions tab
+- [ ] Push to `main` once and confirm both the CI job and the deploy job go green in the Actions tab — the backend deploy job now curls `GET /health` after restart and fails the deploy if it doesn't come back healthy within ~15s
 
 The backend deploy job runs migrations (`pnpm migration:run`) automatically as part of every deploy — never run migrations manually against prod outside this pipeline once it's live, or the pipeline's assumption of "already migrated" drifts from reality.
 
