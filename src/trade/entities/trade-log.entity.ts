@@ -16,7 +16,13 @@ export class TradeLog {
   @Column({ type: 'varchar', length: 4 })
   direction: Direction;
 
-  @Column({ type: 'decimal', precision: 12, scale: 4, name: 'signal_price', transformer: decimalTransformer })
+  @Column({
+    type: 'decimal',
+    precision: 12,
+    scale: 4,
+    name: 'signal_price',
+    transformer: decimalTransformer,
+  })
   signalPrice: number;
 
   @Column({
@@ -29,7 +35,13 @@ export class TradeLog {
   })
   investmentAmount: number | null;
 
-  @Column({ type: 'decimal', precision: 12, scale: 4, nullable: true, transformer: decimalTransformer })
+  @Column({
+    type: 'decimal',
+    precision: 12,
+    scale: 4,
+    nullable: true,
+    transformer: decimalTransformer,
+  })
   quantity: number | null;
 
   @Column({ type: 'varchar', length: 100, nullable: true, name: 'deal_reference' })
