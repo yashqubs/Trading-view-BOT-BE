@@ -32,10 +32,20 @@ export class TradingViewIpGuard implements CanActivate {
     return true;
   }
 
+  // X-Forwarded-For is `client, proxy1, proxy2, ...` — each hop APPENDS the
+  // address it received the request from. The leftmost entry is whatever the
+  // client claimed (attacker-controlled: `curl -H "X-Forwarded-For: <a
+  // whitelisted IP>"` trivially spoofs it and bypasses this guard entirely).
+  // The rightmost entry is what our own reverse proxy actually observed,
+  // which is the only part that can't be forged. This assumes exactly one
+  // trusted proxy hop in front of the app (Nginx on the same EC2 instance,
+  // per the documented architecture) with no CDN/load balancer further out —
+  // if that topology ever changes, this must be revisited.
   private extractClientIp(request: Request): string {
     const forwardedFor = request.headers['x-forwarded-for'];
     if (typeof forwardedFor === 'string' && forwardedFor.length > 0) {
-      return forwardedFor.split(',')[0].trim();
+      const hops = forwardedFor.split(',').map((ip) => ip.trim());
+      return hops[hops.length - 1] ?? '';
     }
     return request.ip ?? request.socket.remoteAddress ?? '';
   }

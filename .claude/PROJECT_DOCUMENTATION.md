@@ -340,6 +340,7 @@ A simple user management system so an admin can create additional portal users w
 | DB_NAME | Database name | trading_view_bot |
 | FRONTEND_ORIGIN | Portal URL (CORS + emailed portal links) | https://portal.your-domain.com |
 | PUBLIC_BASE_URL | This backend's own public URL — builds the webhook URL shown on Settings (`{PUBLIC_BASE_URL}/webhook/signal`) | https://api.your-domain.com |
+| TRADINGVIEW_IPS | Comma-separated webhook source IPs checked by `TradingViewIpGuard` (Section 5 Layer 3). Unset = fails closed, no signal ever gets through | 52.89.214.238,34.212.75.30,54.218.53.128,52.32.178.7 |
 | EMAIL_FROM | Verified SES sender identity | no-reply@your-domain.com |
 | SECRET_NAME_IG | Secrets Manager key name | prod/trading-bot/ig |
 | SECRET_NAME_APP | Secrets Manager key name | prod/trading-bot/app |
