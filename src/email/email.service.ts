@@ -19,7 +19,11 @@ export class EmailService {
   }
 
   /** OTP delivery has no fallback, so a send failure propagates — the caller must tell the user it didn't go out. */
-  async sendOtpEmail(to: string, code: string, purpose: 'LOGIN' | 'SETUP'): Promise<void> {
+  async sendOtpEmail(
+    to: string,
+    code: string,
+    purpose: 'LOGIN' | 'SETUP' | 'RESET',
+  ): Promise<void> {
     const { subject, html } = otpEmailTemplate(code, purpose);
     await this.send(to, subject, html);
   }

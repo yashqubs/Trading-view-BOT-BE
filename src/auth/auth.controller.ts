@@ -21,6 +21,7 @@ import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { Login2faDto } from './dto/login-2fa.dto';
 import { LoginDto } from './dto/login.dto';
 import { ResendOtpDto } from './dto/resend-otp.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 import { Verify2faDto } from './dto/verify-2fa.dto';
 import { User } from '../user/entities/user.entity';
 import { UserService } from '../user/user.service';
@@ -63,14 +64,22 @@ export class AuthController {
   }
 
   // Deliberately the same response whether or not the email is registered —
-  // see UserService.resetPasswordByEmail for why. Throttled at the same rate
+  // see AuthService.requestPasswordReset for why. Throttled at the same rate
   // as login so it can't be used to mass-email accounts either.
   @Post('forgot-password')
   @Throttle(LOGIN_THROTTLE)
   @HttpCode(HttpStatus.OK)
   async forgotPassword(@Body() dto: ForgotPasswordDto): Promise<{ message: string }> {
-    await this.userService.resetPasswordByEmail(dto.email);
-    return { message: 'If that email is registered, we have sent password reset instructions.' };
+    await this.authService.requestPasswordReset(dto.email);
+    return { message: 'If that email is registered, we have sent a verification code.' };
+  }
+
+  @Post('reset-password')
+  @Throttle(LOGIN_THROTTLE)
+  @HttpCode(HttpStatus.OK)
+  async resetPassword(@Body() dto: ResetPasswordDto): Promise<{ message: string }> {
+    await this.authService.resetPasswordWithCode(dto);
+    return { message: 'Password updated. You can now sign in with your new password.' };
   }
 
   @Post('2fa/setup')

@@ -33,12 +33,14 @@ function layout(title: string, bodyHtml: string): string {
 
 export function otpEmailTemplate(
   code: string,
-  purpose: 'LOGIN' | 'SETUP',
+  purpose: 'LOGIN' | 'SETUP' | 'RESET',
 ): { subject: string; html: string } {
   const intro =
     purpose === 'LOGIN'
       ? 'Use this code to finish signing in.'
-      : 'Use this code to confirm enabling two-factor authentication.';
+      : purpose === 'SETUP'
+        ? 'Use this code to confirm enabling two-factor authentication.'
+        : 'Use this code to reset your password.';
 
   return {
     subject: `Your verification code: ${code}`,

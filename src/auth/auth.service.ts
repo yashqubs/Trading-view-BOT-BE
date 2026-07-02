@@ -8,6 +8,7 @@ import { EmailService } from '../email/email.service';
 import { Login2faDto } from './dto/login-2fa.dto';
 import { LoginDto } from './dto/login.dto';
 import { ResendOtpDto } from './dto/resend-otp.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 import { Disable2faDto } from './dto/disable-2fa.dto';
 import { Verify2faDto } from './dto/verify-2fa.dto';
 import { User } from '../user/entities/user.entity';
@@ -141,6 +142,47 @@ export class AuthService {
     return user;
   }
 
+  /**
+   * Deliberately silent about whether the email is registered — see
+   * AuthController.forgotPassword for why the response is always generic.
+   * A resend-cooldown rejection from issueOtp is swallowed for the same
+   * reason: it must not be distinguishable from "no such account".
+   */
+  async requestPasswordReset(email: string): Promise<void> {
+    const user = await this.userRepository.findOne({ where: { email } });
+    if (!user || !user.active) {
+      return;
+    }
+
+    try {
+      await this.issueOtp(user, 'RESET');
+    } catch {
+      // Resend cooldown — already has a valid code in flight.
+    }
+  }
+
+  /**
+   * Verifies the emailed code and sets the new password in one step — see
+   * AuthController.resetPassword. A missing/inactive account fails with the
+   * exact same error as a wrong code, so this can't be used to enumerate
+   * registered emails either.
+   */
+  async resetPasswordWithCode(dto: ResetPasswordDto): Promise<void> {
+    const user = await this.userRepository.findOne({ where: { email: dto.email } });
+    if (!user || !user.active) {
+      throw new UnauthorizedException('Invalid or expired code');
+    }
+
+    await this.verifyOtp(user, dto.code, 'RESET');
+
+    user.passwordHash = await AuthService.hashPassword(dto.newPassword);
+    user.mustChangePassword = false;
+    user.tempPassword = null;
+    user.failedLoginAttempts = 0;
+    user.lockedUntil = null;
+    await this.userRepository.save(user);
+  }
+
   async logout(token: string | undefined, response: Response): Promise<void> {
     if (token) {
       try {
@@ -154,7 +196,7 @@ export class AuthService {
     this.sessionService.clearCookie(response);
   }
 
-  private async issueOtp(user: User, purpose: 'LOGIN' | 'SETUP'): Promise<OtpSentResult> {
+  private async issueOtp(user: User, purpose: 'LOGIN' | 'SETUP' | 'RESET'): Promise<OtpSentResult> {
     if (user.otpLastSentAt && Date.now() - user.otpLastSentAt.getTime() < OTP_RESEND_COOLDOWN_MS) {
       throw new BadRequestException('Please wait before requesting another code');
     }
@@ -175,7 +217,11 @@ export class AuthService {
     };
   }
 
-  private async verifyOtp(user: User, code: string, purpose: 'LOGIN' | 'SETUP'): Promise<void> {
+  private async verifyOtp(
+    user: User,
+    code: string,
+    purpose: 'LOGIN' | 'SETUP' | 'RESET',
+  ): Promise<void> {
     const invalid = new UnauthorizedException('Invalid or expired code');
 
     if (

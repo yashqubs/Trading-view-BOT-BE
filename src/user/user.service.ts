@@ -60,6 +60,7 @@ export class UserService {
       email: dto.email,
       role: dto.role,
       passwordHash: await bcrypt.hash(tempPassword, BCRYPT_COST),
+      tempPassword,
       mustChangePassword: true,
       twoFactorEnabled: false,
       active: true,
@@ -98,11 +99,36 @@ export class UserService {
     return this.userRepository.save(user);
   }
 
+  /**
+   * The single "get them a working temp password" action for an admin.
+   * If one is already pending — the user hasn't set their own password yet
+   * — this resends that exact same password instead of minting a new one,
+   * so clicking it again (or an email that never arrived) doesn't keep
+   * invalidating whatever was already sent or shown on screen. Only issues
+   * a genuinely new one when there's nothing pending to resend, i.e. the
+   * user already has their own password and needs a real reset.
+   */
   async resetPassword(id: string): Promise<ResetPasswordResult> {
     const user = await this.findByIdOrThrow(id);
+
+    if (user.mustChangePassword && user.tempPassword) {
+      await this.emailService.sendPasswordResetEmail(
+        user.email,
+        user.name,
+        user.tempPassword,
+        this.portalUrl(),
+      );
+      return { user, tempPassword: user.tempPassword };
+    }
+
+    return this.issueNewTempPassword(user);
+  }
+
+  private async issueNewTempPassword(user: User): Promise<ResetPasswordResult> {
     const tempPassword = this.generateTempPassword();
 
     user.passwordHash = await bcrypt.hash(tempPassword, BCRYPT_COST);
+    user.tempPassword = tempPassword;
     user.mustChangePassword = true;
     const saved = await this.userRepository.save(user);
 
@@ -113,36 +139,6 @@ export class UserService {
       this.portalUrl(),
     );
     return { user: saved, tempPassword };
-  }
-
-  /**
-   * Self-service "forgot password" — reuses the exact same mechanism as the
-   * admin-triggered resetPassword() above (new temp password, forced change
-   * on next login), just looked up by email instead of an authenticated
-   * admin picking a user ID.
-   *
-   * Deliberately returns void, always, with no indication of whether the
-   * email matched an account — the caller (AuthController) sends the same
-   * generic response either way. Doing otherwise (e.g. throwing NotFound)
-   * would let this endpoint be used to enumerate registered email addresses.
-   */
-  async resetPasswordByEmail(email: string): Promise<void> {
-    const user = await this.userRepository.findOne({ where: { email } });
-    if (!user || !user.active) {
-      return;
-    }
-
-    const tempPassword = this.generateTempPassword();
-    user.passwordHash = await bcrypt.hash(tempPassword, BCRYPT_COST);
-    user.mustChangePassword = true;
-    const saved = await this.userRepository.save(user);
-
-    await this.emailService.sendPasswordResetEmail(
-      saved.email,
-      saved.name,
-      tempPassword,
-      this.portalUrl(),
-    );
   }
 
   async deactivate(id: string, currentUserId: string): Promise<User> {
@@ -166,6 +162,7 @@ export class UserService {
 
     user.passwordHash = await bcrypt.hash(dto.newPassword, BCRYPT_COST);
     user.mustChangePassword = false;
+    user.tempPassword = null;
     return this.userRepository.save(user);
   }
 

@@ -23,6 +23,13 @@ export class User {
   @Column({ type: 'varchar', length: 255, name: 'password_hash' })
   passwordHash: string;
 
+  // Plaintext of the currently-pending invite/reset temp password, if any —
+  // lets an admin resend the exact same one instead of minting a new one on
+  // every click. Cleared once the user sets their own real password.
+  @Exclude()
+  @Column({ type: 'varchar', length: 255, nullable: true, name: 'temp_password' })
+  tempPassword: string | null;
+
   @Column({ type: 'varchar', length: 20, default: UserRole.VIEWER })
   role: UserRole;
 
@@ -40,7 +47,7 @@ export class User {
   otpExpiresAt: Date | null;
 
   @Column({ type: 'varchar', length: 10, nullable: true, name: 'otp_purpose' })
-  otpPurpose: 'LOGIN' | 'SETUP' | null;
+  otpPurpose: 'LOGIN' | 'SETUP' | 'RESET' | null;
 
   @Column({ type: 'int', default: 0, name: 'otp_attempts' })
   otpAttempts: number;

@@ -304,7 +304,7 @@ A simple user management system so an admin can create additional portal users w
 | GET | /users | ADMIN | List all users |
 | POST | /users | ADMIN | Create a new user (email, name, role, temp password) |
 | PATCH | /users/:id | ADMIN | Update name, role, or active status |
-| POST | /users/:id/reset-password | ADMIN | Generate a new temp password |
+| POST | /users/:id/reset-password | ADMIN | Resend the pending temp password, or generate a new one if none is pending — see below |
 | DELETE | /users/:id | ADMIN | Deactivate a user (soft delete) |
 | GET | /users/me | Any | Get own profile |
 | PATCH | /users/me/password | Any | Change own password |
@@ -318,9 +318,25 @@ A simple user management system so an admin can create additional portal users w
 5. On first login, the user is forced to set a new password, then can optionally enable two-factor authentication
 6. Done — minimal friction
 
+### Reset/Resend Password Is Idempotent While Pending
+
+`POST /users/:id/reset-password` (`UserService.resetPassword`) does not always mint a new temp password. The plaintext of the currently-pending one is stored on the user row (`users.temp_password`, `@Exclude()`d from API responses everywhere except this endpoint's own result) precisely so repeated clicks don't keep invalidating whatever was already emailed or shown on screen:
+
+- If `mustChangePassword` is true and a `tempPassword` is stored (an invite or reset is still pending — the user hasn't set their own password yet), this **resends that exact same password** and leaves the password hash untouched.
+- Otherwise (the user already has their own password) it mints a genuinely new one, same as before.
+
+`temp_password` is cleared (`null`) the moment the user actually sets their own password — via `changeOwnPassword` (first-login flow or a voluntary change) or via the self-service OTP reset (`AuthService.resetPasswordWithCode`, see below) — so the next admin-triggered reset after that point is guaranteed to mint a fresh one, not resend something stale.
+
+The portal UI reflects this: the row action in Users tooltips as "Resend password" when a reset is pending, "Reset password" otherwise (`src/pages/users/Users.tsx`, keyed off `user.mustChangePassword`).
+
 ### Self-Service Forgot Password
 
-`POST /auth/forgot-password` (`{ email }`, no auth) lets a user request their own reset instead of waiting on an admin. It runs the exact same temp-password-and-email logic as the admin-triggered `POST /users/:id/reset-password` above (`UserService.resetPasswordByEmail`, called from `UserService.resetPassword`'s sibling), just looked up by email instead of an authenticated admin picking a user ID. The response is always the same generic message ("If that email is registered, we have sent password reset instructions.") regardless of whether the email matches an account or the account is active — this is deliberate, so the endpoint can't be used to enumerate registered emails. Throttled at the same rate as `/auth/login`.
+A two-step, OTP-based flow (`AuthService`), reusing the exact same emailed-code mechanism as login 2FA and 2FA setup — just a third `otpPurpose` value, `RESET`, instead of a separate temp-password path:
+
+1. `POST /auth/forgot-password` (`{ email }`, no auth) — issues a 6-digit code (`AuthService.requestPasswordReset`) and emails it via the shared `otpEmailTemplate`. Always returns the same generic message ("If that email is registered, we have sent a verification code.") regardless of whether the email matches an account, whether the account is active, or whether a resend-cooldown rejection occurred internally — none of that is observable from the response, so the endpoint can't be used to enumerate registered emails. Throttled at the same rate as `/auth/login`.
+2. `POST /auth/reset-password` (`{ email, code, newPassword }`, no auth) — verifies the code (`AuthService.resetPasswordWithCode`, reusing the same `verifyOtp` used for LOGIN/SETUP, scoped to purpose `RESET`) and sets the new password in one step. A missing/inactive account or a wrong/expired/wrong-purpose code all fail with the identical `401 Invalid or expired code` — same enumeration-safety property. On success, clears `mustChangePassword` and any login lockout, and the OTP fields. Throttled the same as login; also subject to the shared `OTP_MAX_ATTEMPTS` (5 wrong attempts clears the code, forcing a fresh `forgot-password` request).
+
+The portal UI shows this as three inline steps on the login page: enter email → enter the emailed code → set new password + confirm (see `src/pages/login/Login.tsx`, `forgotStage`). Entering all 6 code digits advances the UI immediately (client-side only, mirroring the existing OTP-input pattern); the code itself is only actually verified server-side together with the final password submission.
 
 ### User Table Behaviour
 
@@ -551,7 +567,8 @@ Controls the price a trade actually fills at, independent of how quantity is siz
 | POST | /auth/login | Email + password → forced password change, email-OTP challenge, or a full session |
 | POST | /auth/login/2fa | Email + password + emailed code → JWT cookie |
 | POST | /auth/login/2fa/resend | Re-send the login OTP (30s cooldown) |
-| POST | /auth/forgot-password | Self-service password reset by email. Always returns the same generic message regardless of whether the email is registered (enumeration-safe); reuses the admin `resetPassword` temp-password-by-email flow, not the OTP mechanism. Throttled same as login. |
+| POST | /auth/forgot-password | Self-service password reset, step 1: email an OTP (`otpPurpose: 'RESET'`). Always returns the same generic message, enumeration-safe. Throttled same as login. |
+| POST | /auth/reset-password | Self-service password reset, step 2: `{ email, code, newPassword }` → verifies the code and sets the new password in one call. Same generic `401` for a wrong code or an unknown email. |
 | POST | /auth/2fa/setup | Email an OTP to confirm enabling 2FA |
 | POST | /auth/2fa/resend | Re-send the setup OTP (30s cooldown) |
 | POST | /auth/2fa/verify | Confirm 2FA setup with the emailed code |

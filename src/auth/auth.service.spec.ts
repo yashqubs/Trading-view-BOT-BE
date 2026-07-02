@@ -23,6 +23,7 @@ describe('AuthService', () => {
       name: 'Test User',
       email: 'admin@example.com',
       passwordHash: '',
+      tempPassword: null,
       role: UserRole.ADMIN,
       active: true,
       twoFactorEnabled: false,
@@ -270,6 +271,127 @@ describe('AuthService', () => {
       await service.setup2fa(user.id);
 
       await expect(service.resendSetupOtp(user.id)).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  describe('requestPasswordReset', () => {
+    it('emails a RESET-purpose code when the account exists', async () => {
+      const user = buildUser();
+      repository.findOne.mockResolvedValue(user);
+
+      await service.requestPasswordReset(user.email);
+
+      expect(emailService.sendOtpEmail).toHaveBeenCalledWith(
+        user.email,
+        expect.any(String),
+        'RESET',
+      );
+      expect(user.otpPurpose).toBe('RESET');
+    });
+
+    it('does nothing for a non-existent email — no email sent, never throws', async () => {
+      repository.findOne.mockResolvedValue(null);
+
+      await expect(service.requestPasswordReset('nobody@example.com')).resolves.toBeUndefined();
+      expect(emailService.sendOtpEmail).not.toHaveBeenCalled();
+    });
+
+    it('does nothing for a deactivated account — same silent no-op as a non-existent one', async () => {
+      repository.findOne.mockResolvedValue(buildUser({ active: false }));
+
+      await expect(
+        service.requestPasswordReset('deactivated@example.com'),
+      ).resolves.toBeUndefined();
+      expect(emailService.sendOtpEmail).not.toHaveBeenCalled();
+    });
+
+    it('swallows a resend-cooldown rejection instead of surfacing it', async () => {
+      const user = buildUser({ otpLastSentAt: new Date() });
+      repository.findOne.mockResolvedValue(user);
+
+      await expect(service.requestPasswordReset(user.email)).resolves.toBeUndefined();
+      expect(emailService.sendOtpEmail).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('resetPasswordWithCode', () => {
+    it('sets the new password and clears the OTP on a valid code', async () => {
+      const user = buildUser({ passwordHash: await bcrypt.hash('old-password', 12) });
+      repository.findOne.mockResolvedValue(user);
+      await service.requestPasswordReset(user.email);
+      const code = lastSentCode();
+
+      await service.resetPasswordWithCode({
+        email: user.email,
+        code,
+        newPassword: 'brand-new-password',
+      });
+
+      expect(user.otpCodeHash).toBeNull();
+      expect(user.mustChangePassword).toBe(false);
+      expect(await bcrypt.compare('brand-new-password', user.passwordHash)).toBe(true);
+    });
+
+    it('clears any existing lockout on a successful reset', async () => {
+      const user = buildUser({
+        passwordHash: await bcrypt.hash('old-password', 12),
+        failedLoginAttempts: 3,
+        lockedUntil: new Date(Date.now() + 60_000),
+      });
+      repository.findOne.mockResolvedValue(user);
+      await service.requestPasswordReset(user.email);
+      const code = lastSentCode();
+
+      await service.resetPasswordWithCode({
+        email: user.email,
+        code,
+        newPassword: 'brand-new-password',
+      });
+
+      expect(user.failedLoginAttempts).toBe(0);
+      expect(user.lockedUntil).toBeNull();
+    });
+
+    it('rejects a wrong code and counts the attempt', async () => {
+      const user = buildUser();
+      repository.findOne.mockResolvedValue(user);
+      await service.requestPasswordReset(user.email);
+
+      await expect(
+        service.resetPasswordWithCode({
+          email: user.email,
+          code: '000000',
+          newPassword: 'brand-new-password',
+        }),
+      ).rejects.toThrow(UnauthorizedException);
+      expect(user.otpAttempts).toBe(1);
+    });
+
+    it('rejects a non-existent email with the exact same error as a wrong code — no enumeration', async () => {
+      repository.findOne.mockResolvedValue(null);
+
+      await expect(
+        service.resetPasswordWithCode({
+          email: 'nobody@example.com',
+          code: '123456',
+          newPassword: 'brand-new-password',
+        }),
+      ).rejects.toThrow(new UnauthorizedException('Invalid or expired code'));
+    });
+
+    it('rejects a code issued for a different purpose (e.g. LOGIN)', async () => {
+      const user = buildUser({ passwordHash: await bcrypt.hash('pw', 12), twoFactorEnabled: true });
+      repository.findOne.mockResolvedValue(user);
+      await service.login({ email: user.email, password: 'pw' }, mockResponse);
+      const loginCode = lastSentCode();
+
+      await expect(
+        service.resetPasswordWithCode({
+          email: user.email,
+          code: loginCode,
+          newPassword: 'brand-new-password',
+        }),
+      ).rejects.toThrow(UnauthorizedException);
     });
   });
 
