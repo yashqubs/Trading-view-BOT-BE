@@ -16,18 +16,21 @@ CLAUDE.md                      Root context + documentation reference
 │   └── audit-trade-path.md    /audit-trade-path — review the signal→trade pipeline
 └── scripts/
     ├── backup-to-s3.sh        Nightly DB backup to encrypted S3 (cron at 02:00)
-    ├── restore-from-s3.sh     Restore DB from latest/specified S3 dump
-    ├── dependabot.yml         → move to .github/dependabot.yml in your repo
-    └── ci.yml                 → move to .github/workflows/ci.yml in your repo
+    └── restore-from-s3.sh     Restore DB from latest/specified S3 dump
+
+.github/
+├── workflows/ci.yml           Live CI/CD — lint/build/test/audit on every push+PR,
+│                               then SSH-deploys to EC2 (migrate + pm2 restart) on push to main
+└── dependabot.yml             Weekly dependency update PRs
 ```
 
 ## How to use
 
 1. Place `CLAUDE.md` at the repo root and the `.claude/` folder at the repo root.
-2. Move `dependabot.yml` to `.github/dependabot.yml` and `ci.yml` to `.github/workflows/ci.yml`.
-3. Make the scripts executable: `chmod +x .claude/scripts/*.sh`.
-4. Add the backup cron on the EC2 server: `0 2 * * * /path/to/.claude/scripts/backup-to-s3.sh >> /var/log/db-backup.log 2>&1`.
-5. Edit the placeholders in the scripts (bucket name, region, secret names) to match your AWS setup.
+2. Make the scripts executable: `chmod +x .claude/scripts/*.sh`.
+3. Add the backup cron on the EC2 server: `0 2 * * * /path/to/.claude/scripts/backup-to-s3.sh >> /var/log/db-backup.log 2>&1`.
+4. Edit the placeholders in the scripts (bucket name, region, secret names) to match your AWS setup.
+5. For the CD half of `.github/workflows/ci.yml` to work, add repo secrets `EC2_HOST`, `EC2_SSH_USER`, `EC2_SSH_KEY` and repo variable `DEPLOY_PATH` under GitHub → Settings → Secrets and variables → Actions. See Section 18 Phase 2b of `PROJECT_DOCUMENTATION.md`.
 
 ## Slash commands
 
@@ -43,3 +46,4 @@ CLAUDE.md                      Root context + documentation reference
 - Condition pipeline order is fixed
 - Every endpoint role-guarded; webhook IP + secret guarded
 - Dependency scanning gates deployment
+- CI (lint/build/test/audit) must pass before CD deploys — enforced by `needs:` in `.github/workflows/ci.yml`, not just convention
