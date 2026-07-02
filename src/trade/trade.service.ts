@@ -2,11 +2,12 @@ import { Injectable, Logger } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Between, Repository, SelectQueryBuilder } from 'typeorm';
-import { Direction, TradeStatus } from '../common/enums';
+import { Direction, ExecutionMode, TradeStatus } from '../common/enums';
 import { IgApiException } from '../ig-client/ig-api.exception';
 import { IgClientService } from '../ig-client/ig-client.service';
 import { IgPosition } from '../ig-client/ig-client.types';
 import { StockMapping } from '../mapping/entities/stock-mapping.entity';
+import { TradingRules } from '../trading-rules/entities/trading-rules.entity';
 import { TradingRulesService } from '../trading-rules/trading-rules.service';
 import { TradeLogQueryDto } from './dto/trade-log-query.dto';
 import { SortOrder, TRADE_LOG_SORT_COLUMN, TradeLogSortBy } from './dto/trade-log-sort.enum';
@@ -56,13 +57,25 @@ export class TradeService {
    * Executes the trade on IG and logs the outcome. Caller (SignalModule) has
    * already run every condition check — for SELL, `existingPosition` is the
    * open position to close (matched during the SELL position check).
+   *
+   * `rules` supplies the global default execution mode; `mapping.executionMode`
+   * overrides it for this specific stock when set. SIGNAL_PRICE places a
+   * LIMIT order at the exact signal price — IG either fills it immediately
+   * or rejects it, same as a market order would; there is no working-order
+   * follow-up, so a rejected LIMIT order just logs FAILED like anything else.
    */
   async executeTrade(
     input: SignalInput,
     mapping: StockMapping,
     existingPosition: IgPosition | null,
+    rules: TradingRules,
   ): Promise<TradeLog> {
     const quantity = calculateQuantity(Number(mapping.investmentAmount), input.signalPrice);
+    const executionMode = mapping.executionMode ?? rules.executionMode;
+    const igOrderParams =
+      executionMode === ExecutionMode.SIGNAL_PRICE
+        ? { orderType: 'LIMIT' as const, level: input.signalPrice }
+        : { orderType: 'MARKET' as const };
 
     const baseLog = {
       tvTicker: input.tvTicker,
@@ -85,6 +98,7 @@ export class TradeService {
           dealId: existingPosition.dealId,
           direction: Direction.SELL,
           size: existingPosition.size,
+          ...igOrderParams,
         });
         dealReference = result.dealReference;
       } else {
@@ -92,6 +106,7 @@ export class TradeService {
           epic: mapping.igEpic,
           direction: Direction.BUY,
           size: quantity,
+          ...igOrderParams,
         });
         dealReference = result.dealReference;
       }
@@ -109,6 +124,7 @@ export class TradeService {
           status: TradeStatus.SUCCESS,
           dealReference,
           dealId: confirmation.dealId,
+          executedPrice: confirmation.level,
           executedAt: new Date(),
         }),
       );

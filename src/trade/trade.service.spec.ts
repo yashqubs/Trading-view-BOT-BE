@@ -1,10 +1,11 @@
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { Direction, TradeStatus } from '../common/enums';
+import { Direction, ExecutionMode, TradeStatus } from '../common/enums';
 import { IgApiException } from '../ig-client/ig-api.exception';
 import { IgClientService } from '../ig-client/ig-client.service';
 import { StockMapping } from '../mapping/entities/stock-mapping.entity';
+import { TradingRules } from '../trading-rules/entities/trading-rules.entity';
 import { TradingRulesService } from '../trading-rules/trading-rules.service';
 import { TradeLog } from './entities/trade-log.entity';
 import { SignalInput } from './interfaces/signal-input.interface';
@@ -40,9 +41,12 @@ describe('TradeService', () => {
     maxDailySpend: null,
     coolDownMinutes: null,
     maxOpenPositions: 1,
+    executionMode: null,
     createdAt: new Date(),
     updatedAt: new Date(),
   } as StockMapping;
+
+  const rules = { executionMode: ExecutionMode.MARKET } as TradingRules;
 
   beforeEach(async () => {
     tradeLogRepository = {
@@ -106,18 +110,68 @@ describe('TradeService', () => {
         dealStatus: 'ACCEPTED',
         status: 'OPEN',
         reason: null,
+        level: 101.25,
       });
 
-      const result = await service.executeTrade(input, mapping, null);
+      const result = await service.executeTrade(input, mapping, null, rules);
 
       expect(igClientService.placeOrder).toHaveBeenCalledWith({
         epic: mapping.igEpic,
         direction: Direction.BUY,
         size: 10,
+        orderType: 'MARKET',
       });
       expect(result.status).toBe(TradeStatus.SUCCESS);
       expect(result.dealId).toBe('DEAL-1');
+      // The fill price IG actually confirmed, not the TradingView signal
+      // price used to size the trade — orders are MARKET, so these can differ.
+      expect(result.executedPrice).toBe(101.25);
       expect(tradingRulesService.resetFailureCount).toHaveBeenCalled();
+    });
+
+    it('places a LIMIT order at the signal price when the global execution mode is SIGNAL_PRICE', async () => {
+      igClientService.placeOrder.mockResolvedValue({ dealReference: 'REF-1b' });
+      igClientService.confirmDeal.mockResolvedValue({
+        dealId: 'DEAL-1b',
+        dealStatus: 'ACCEPTED',
+        status: 'OPEN',
+        reason: null,
+        level: 100,
+      });
+
+      await service.executeTrade(input, mapping, null, {
+        executionMode: ExecutionMode.SIGNAL_PRICE,
+      } as TradingRules);
+
+      expect(igClientService.placeOrder).toHaveBeenCalledWith({
+        epic: mapping.igEpic,
+        direction: Direction.BUY,
+        size: 10,
+        orderType: 'LIMIT',
+        level: input.signalPrice,
+      });
+    });
+
+    it("a stock's own executionMode overrides the global default", async () => {
+      igClientService.placeOrder.mockResolvedValue({ dealReference: 'REF-1c' });
+      igClientService.confirmDeal.mockResolvedValue({
+        dealId: 'DEAL-1c',
+        dealStatus: 'ACCEPTED',
+        status: 'OPEN',
+        reason: null,
+        level: 100,
+      });
+      const stockOverride = {
+        ...mapping,
+        executionMode: ExecutionMode.SIGNAL_PRICE,
+      } as StockMapping;
+
+      // Global default is MARKET (`rules`), but the stock says SIGNAL_PRICE.
+      await service.executeTrade(input, stockOverride, null, rules);
+
+      expect(igClientService.placeOrder).toHaveBeenCalledWith(
+        expect.objectContaining({ orderType: 'LIMIT', level: input.signalPrice }),
+      );
     });
 
     it('logs FAILED when IG rejects the deal', async () => {
@@ -127,9 +181,10 @@ describe('TradeService', () => {
         dealStatus: 'REJECTED',
         status: null,
         reason: 'INSUFFICIENT_FUNDS',
+        level: null,
       });
 
-      const result = await service.executeTrade(input, mapping, null);
+      const result = await service.executeTrade(input, mapping, null, rules);
 
       expect(result.status).toBe(TradeStatus.FAILED);
       expect(result.errorMessage).toBe('INSUFFICIENT_FUNDS');
@@ -138,7 +193,7 @@ describe('TradeService', () => {
     it('logs FAILED with the IG error code when placeOrder throws', async () => {
       igClientService.placeOrder.mockRejectedValue(new IgApiException('MARKET_CLOSED'));
 
-      const result = await service.executeTrade(input, mapping, null);
+      const result = await service.executeTrade(input, mapping, null, rules);
 
       expect(result.status).toBe(TradeStatus.FAILED);
       expect(result.errorMessage).toBe('MARKET_CLOSED');
@@ -148,7 +203,7 @@ describe('TradeService', () => {
       tradingRulesService.recordFailure.mockResolvedValue(true);
       igClientService.placeOrder.mockRejectedValue(new IgApiException('SOME_ERROR'));
 
-      await service.executeTrade(input, mapping, null);
+      await service.executeTrade(input, mapping, null, rules);
 
       const statuses = tradeLogRepository.save.mock.calls.map((call) => call[0].status);
       expect(statuses).toEqual([TradeStatus.FAILED, TradeStatus.AUTO_PAUSED]);
@@ -171,21 +226,24 @@ describe('TradeService', () => {
         dealStatus: 'ACCEPTED',
         status: 'CLOSED',
         reason: null,
+        level: 108.5,
       });
 
       const sellInput: SignalInput = { ...input, direction: Direction.SELL, signalPrice: 110 };
-      const result = await service.executeTrade(sellInput, mapping, existingPosition);
+      const result = await service.executeTrade(sellInput, mapping, existingPosition, rules);
 
       expect(igClientService.closePosition).toHaveBeenCalledWith({
         dealId: 'POS-1',
         direction: Direction.SELL,
         size: 10,
+        orderType: 'MARKET',
       });
       expect(result.status).toBe(TradeStatus.SUCCESS);
+      expect(result.executedPrice).toBe(108.5);
     });
 
     it('logs FAILED if executeTrade is somehow called for SELL with no position', async () => {
-      const result = await service.executeTrade(sellInput, mapping, null);
+      const result = await service.executeTrade(sellInput, mapping, null, rules);
 
       expect(result.status).toBe(TradeStatus.FAILED);
       expect(igClientService.closePosition).not.toHaveBeenCalled();

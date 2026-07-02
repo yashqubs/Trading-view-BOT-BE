@@ -20,6 +20,11 @@ export interface PlaceOrderParams {
   epic: string;
   direction: Direction;
   size: number;
+  /** Omit (or MARKET) for the existing fire-at-current-price behaviour. Pass
+   * LIMIT + level to attempt a fill at that exact price — IG either fills or
+   * rejects immediately; this app does not track resting/working orders. */
+  orderType?: 'MARKET' | 'LIMIT';
+  level?: number;
 }
 
 export interface PlaceOrderResult {
@@ -31,10 +36,17 @@ export interface ConfirmDealResult {
   dealStatus: 'ACCEPTED' | 'REJECTED';
   status: 'OPEN' | 'CLOSED' | 'DELETED' | 'AMENDED' | 'PARTIALLY_CLOSED' | null;
   reason: string | null;
+  /** The actual price IG filled the deal at — distinct from the TradingView
+   * signal price, which only sizes the trade (market orders don't specify a
+   * price, so this can legitimately differ). Null on rejected/unfilled deals. */
+  level: number | null;
 }
 
 export interface ClosePositionParams {
   dealId: string;
   direction: Direction;
   size: number;
+  /** See PlaceOrderParams — same MARKET/LIMIT semantics apply to closes. */
+  orderType?: 'MARKET' | 'LIMIT';
+  level?: number;
 }

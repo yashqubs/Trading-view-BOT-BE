@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { Direction, TradeStatus } from '../common/enums';
+import { Direction, ExecutionMode, TradeStatus } from '../common/enums';
 import { IgClientService } from '../ig-client/ig-client.service';
 import { StockMapping } from '../mapping/entities/stock-mapping.entity';
 import { MappingService } from '../mapping/mapping.service';
@@ -26,6 +26,7 @@ function buildRules(overrides: Partial<TradingRules> = {}): TradingRules {
     tradeStartTimeUtc: '14:30:00',
     tradeEndTimeUtc: '21:00:00',
     tradeWeekdaysOnly: true,
+    executionMode: ExecutionMode.MARKET,
     updatedAt: new Date(),
     updatedBy: null,
     ...overrides,
@@ -44,6 +45,7 @@ function buildMapping(overrides: Partial<StockMapping> = {}): StockMapping {
     maxDailySpend: null,
     coolDownMinutes: null,
     maxOpenPositions: 1,
+    executionMode: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
@@ -245,6 +247,7 @@ describe('SignalService — condition pipeline', () => {
       expect.objectContaining({ direction: Direction.BUY }),
       expect.objectContaining({ tvTicker: 'AAPL' }),
       null,
+      expect.objectContaining({ executionMode: ExecutionMode.MARKET }),
     );
   });
 
@@ -263,6 +266,7 @@ describe('SignalService — condition pipeline', () => {
       expect.objectContaining({ direction: Direction.SELL }),
       expect.objectContaining({ tvTicker: 'AAPL' }),
       position,
+      expect.objectContaining({ executionMode: ExecutionMode.MARKET }),
     );
   });
 

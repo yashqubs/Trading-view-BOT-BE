@@ -121,6 +121,7 @@ export class IgClientService {
 
   async placeOrder(params: PlaceOrderParams): Promise<PlaceOrderResult> {
     await this.ensureSession();
+    const orderType = params.orderType ?? 'MARKET';
     return this.request<PlaceOrderResult>({
       method: 'POST',
       url: '/positions/otc',
@@ -129,7 +130,8 @@ export class IgClientService {
         epic: params.epic,
         direction: params.direction,
         size: params.size,
-        orderType: 'MARKET',
+        orderType,
+        ...(orderType === 'LIMIT' ? { level: params.level } : {}),
         currencyCode: 'GBP',
         forceOpen: true,
         guaranteedStop: false,
@@ -174,6 +176,7 @@ export class IgClientService {
    */
   async closePosition(params: ClosePositionParams): Promise<PlaceOrderResult> {
     await this.ensureSession();
+    const orderType = params.orderType ?? 'MARKET';
     return this.request<PlaceOrderResult>({
       method: 'DELETE',
       url: '/positions/otc',
@@ -182,7 +185,8 @@ export class IgClientService {
         dealId: params.dealId,
         direction: params.direction,
         size: params.size,
-        orderType: 'MARKET',
+        orderType,
+        ...(orderType === 'LIMIT' ? { level: params.level } : {}),
         expiry: '-',
       },
     });

@@ -32,6 +32,7 @@ The full project documentation lives at `.claude/PROJECT_DOCUMENTATION.md`. Read
 - There are 17 trade statuses (Section 8), including `DUPLICATE_SIGNAL`. Every skip path logs a specific status — never generic failure.
 - Quantity = `investment_amount / signal_price` (Section 9). Signal price comes from TradingView webhook, NOT from IG (IG has no share price data — Section 19 Limitation 1).
 - SELL always checks open positions first (Section 9 step 12). This is not optional.
+- Trades fill at MARKET price by default, or as a LIMIT order at the exact signal price if `executionMode` (global `trading_rules.execution_mode`, overridable per-stock on `stock_mapping.execution_mode`) is SIGNAL_PRICE. A LIMIT order that can't fill immediately is logged FAILED — there is no working-order/pending-order lifecycle. Don't build one without discussing scope first (Section 9 "Execution Mode").
 - All secrets from AWS Secrets Manager (Section 7). Nothing sensitive in .env.
 - No P&L is computed or stored anywhere in this backend, on purpose — a realized-P&L feature was built and then removed (see Section 19 Limitation 1). Don't reintroduce it without discussing it first.
 

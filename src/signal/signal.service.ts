@@ -163,7 +163,7 @@ export class SignalService {
 
     // 13-15. calculate quantity, execute on IG, log SUCCESS/FAILED, handle failure counter
     this.logger.log(`Executing ${input.direction} for ${input.tvTicker} @ ${input.signalPrice}`);
-    return this.tradeService.executeTrade(input, mapping, existingPosition);
+    return this.tradeService.executeTrade(input, mapping, existingPosition, rules);
   }
 
   private isDuplicateSignal(input: SignalInput): boolean {

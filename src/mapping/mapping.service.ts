@@ -64,6 +64,7 @@ export class MappingService {
       maxDailySpend: dto.maxDailySpend ?? null,
       coolDownMinutes: dto.coolDownMinutes ?? null,
       maxOpenPositions: dto.maxOpenPositions ?? 1,
+      executionMode: dto.executionMode ?? null,
     });
 
     return this.stockMappingRepository.save(mapping);
@@ -80,6 +81,7 @@ export class MappingService {
     if (dto.maxDailySpend !== undefined) mapping.maxDailySpend = dto.maxDailySpend;
     if (dto.coolDownMinutes !== undefined) mapping.coolDownMinutes = dto.coolDownMinutes;
     if (dto.maxOpenPositions !== undefined) mapping.maxOpenPositions = dto.maxOpenPositions;
+    if (dto.executionMode !== undefined) mapping.executionMode = dto.executionMode;
 
     return this.stockMappingRepository.save(mapping);
   }

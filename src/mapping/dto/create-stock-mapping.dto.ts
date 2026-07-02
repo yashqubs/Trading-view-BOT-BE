@@ -1,4 +1,14 @@
-import { IsBoolean, IsInt, IsNumber, IsOptional, IsPositive, IsString, Min } from 'class-validator';
+import {
+  IsBoolean,
+  IsEnum,
+  IsInt,
+  IsNumber,
+  IsOptional,
+  IsPositive,
+  IsString,
+  Min,
+} from 'class-validator';
+import { ExecutionMode } from '../../common/enums';
 
 export class CreateStockMappingDto {
   @IsString()
@@ -35,4 +45,9 @@ export class CreateStockMappingDto {
   @IsInt()
   @IsPositive()
   maxOpenPositions?: number;
+
+  // Omit to inherit trading_rules.execution_mode (the global default).
+  @IsOptional()
+  @IsEnum(ExecutionMode)
+  executionMode?: ExecutionMode;
 }

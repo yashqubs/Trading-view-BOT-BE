@@ -6,6 +6,7 @@ const COLUMNS: Array<keyof TradeLog> = [
   'igEpic',
   'direction',
   'signalPrice',
+  'executedPrice',
   'investmentAmount',
   'quantity',
   'dealReference',

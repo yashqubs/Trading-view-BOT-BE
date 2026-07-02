@@ -1,3 +1,4 @@
+import { ExecutionMode } from '../../common/enums';
 import { TradingRules } from '../../trading-rules/entities/trading-rules.entity';
 import { isMarketOpen } from './market-hours.util';
 
@@ -16,6 +17,7 @@ function buildRules(overrides: Partial<TradingRules> = {}): TradingRules {
     tradeStartTimeUtc: '14:30:00',
     tradeEndTimeUtc: '21:00:00',
     tradeWeekdaysOnly: true,
+    executionMode: ExecutionMode.MARKET,
     updatedAt: new Date(),
     updatedBy: null,
     ...overrides,

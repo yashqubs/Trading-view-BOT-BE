@@ -49,6 +49,7 @@ export class TradingRulesService {
     if (dto.tradeStartTimeUtc !== undefined) rules.tradeStartTimeUtc = dto.tradeStartTimeUtc;
     if (dto.tradeEndTimeUtc !== undefined) rules.tradeEndTimeUtc = dto.tradeEndTimeUtc;
     if (dto.tradeWeekdaysOnly !== undefined) rules.tradeWeekdaysOnly = dto.tradeWeekdaysOnly;
+    if (dto.executionMode !== undefined) rules.executionMode = dto.executionMode;
 
     rules.updatedBy = updatedBy;
     const saved = await this.tradingRulesRepository.save(rules);

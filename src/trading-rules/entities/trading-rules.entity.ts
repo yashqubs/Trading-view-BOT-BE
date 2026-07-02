@@ -1,4 +1,5 @@
 import { Column, Entity, PrimaryColumn, UpdateDateColumn, ValueTransformer } from 'typeorm';
+import { ExecutionMode } from '../../common/enums';
 import { decimalTransformer } from '../../common/transformers/decimal.transformer';
 
 // Postgres `time` columns round-trip as "HH:MM:SS" — the API contract (and
@@ -66,6 +67,17 @@ export class TradingRules {
 
   @Column({ type: 'boolean', default: true, name: 'trade_weekdays_only' })
   tradeWeekdaysOnly: boolean;
+
+  // Global default execution mode. A stock's own execution_mode (nullable,
+  // on stock_mapping) overrides this when set; when null, the stock
+  // inherits this value.
+  @Column({
+    type: 'varchar',
+    length: 20,
+    default: ExecutionMode.MARKET,
+    name: 'execution_mode',
+  })
+  executionMode: ExecutionMode;
 
   @UpdateDateColumn({ type: 'timestamptz', name: 'updated_at' })
   updatedAt: Date;

@@ -5,6 +5,7 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
+import { ExecutionMode } from '../../common/enums';
 import { decimalTransformer } from '../../common/transformers/decimal.transformer';
 
 @Entity('stock_mapping')
@@ -51,6 +52,16 @@ export class StockMapping {
 
   @Column({ type: 'int', default: 1, name: 'max_open_positions' })
   maxOpenPositions: number;
+
+  // Null = inherit trading_rules.execution_mode (the global default). Set
+  // to override just this stock.
+  @Column({
+    type: 'varchar',
+    length: 20,
+    nullable: true,
+    name: 'execution_mode',
+  })
+  executionMode: ExecutionMode | null;
 
   @CreateDateColumn({ type: 'timestamptz', name: 'created_at' })
   createdAt: Date;

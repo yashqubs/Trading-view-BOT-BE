@@ -1,5 +1,6 @@
 import {
   IsBoolean,
+  IsEnum,
   IsInt,
   IsNumber,
   IsOptional,
@@ -8,6 +9,7 @@ import {
   Matches,
   Min,
 } from 'class-validator';
+import { ExecutionMode } from '../../common/enums';
 
 const TIME_REGEX = /^([01]\d|2[0-3]):([0-5]\d)(:[0-5]\d)?$/;
 
@@ -59,4 +61,8 @@ export class UpdateTradingRulesDto {
   @IsOptional()
   @IsBoolean()
   tradeWeekdaysOnly?: boolean;
+
+  @IsOptional()
+  @IsEnum(ExecutionMode)
+  executionMode?: ExecutionMode;
 }

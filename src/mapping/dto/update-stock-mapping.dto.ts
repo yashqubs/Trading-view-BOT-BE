@@ -1,4 +1,14 @@
-import { IsBoolean, IsInt, IsNumber, IsOptional, IsPositive, IsString, Min } from 'class-validator';
+import {
+  IsBoolean,
+  IsEnum,
+  IsInt,
+  IsNumber,
+  IsOptional,
+  IsPositive,
+  IsString,
+  Min,
+} from 'class-validator';
+import { ExecutionMode } from '../../common/enums';
 
 export class UpdateStockMappingDto {
   @IsOptional()
@@ -39,4 +49,10 @@ export class UpdateStockMappingDto {
   @IsInt()
   @IsPositive()
   maxOpenPositions?: number;
+
+  // Optional AND nullable — the frontend sends `null` explicitly to revert
+  // back to inheriting trading_rules.execution_mode (the global default).
+  @IsOptional()
+  @IsEnum(ExecutionMode)
+  executionMode?: ExecutionMode | null;
 }

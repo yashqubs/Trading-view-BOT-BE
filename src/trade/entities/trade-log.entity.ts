@@ -44,6 +44,20 @@ export class TradeLog {
   })
   quantity: number | null;
 
+  // The actual IG fill price (from confirmDeal's `level`) — orders are
+  // placed MARKET, not LIMIT, so this can legitimately differ from
+  // signal_price. Null for trades that never reached a filled state
+  // (skipped, or rejected before/at confirmation).
+  @Column({
+    type: 'decimal',
+    precision: 12,
+    scale: 4,
+    nullable: true,
+    name: 'executed_price',
+    transformer: decimalTransformer,
+  })
+  executedPrice: number | null;
+
   @Column({ type: 'varchar', length: 100, nullable: true, name: 'deal_reference' })
   dealReference: string | null;
 
