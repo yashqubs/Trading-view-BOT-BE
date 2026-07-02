@@ -16,10 +16,11 @@ These rules supplement CLAUDE.md. They are enforced in review.
 - Every portal endpoint has a guard: `@UseGuards(JwtAuthGuard, RolesGuard)` with `@Roles(...)`.
 - The webhook endpoint uses `TradingViewIpGuard` and `WebhookSecretGuard`, not JWT.
 - Validate every request body with a DTO and class-validator decorators. Enable `whitelist: true` and `forbidNonWhitelisted: true` on the global ValidationPipe.
-- Never return password_hash, totp_secret, or recovery_codes in any response. Use class-transformer `@Exclude()`.
+- Never return password_hash or otp_code_hash in any response. Use class-transformer `@Exclude()`.
 - Rate limit: login (5/15min), webhook (60/min), other (100/min).
 - Hash passwords with bcrypt cost 12. Never store or log plaintext.
-- 2FA secrets and recovery codes are encrypted at rest with the key from Secrets Manager.
+- 2FA is optional email-OTP, not TOTP — only a short-lived hash of the current code is stored (`otp_code_hash` + `otp_expires_at`), never a long-lived secret. Nothing OTP-related needs encryption at rest.
+- Every mutating request needs a matching `X-CSRF-Token` header (double-submit against the `csrf_token` cookie) — enforced by `CsrfGuard`.
 
 ## Trade safety rules
 
@@ -35,7 +36,7 @@ These rules supplement CLAUDE.md. They are enforced in review.
 - All access via TypeORM repositories. No raw SQL with interpolated user input.
 - Migrations for every schema change. Never `synchronize: true` in production.
 - Use transactions where multiple writes must succeed together.
-- Decimal columns for money/quantity (never float).
+- Decimal columns for money/quantity (never float). Always add `transformer: decimalTransformer` (`src/common/transformers/decimal.transformer.ts`) to every `decimal`/`numeric` column — node-postgres returns them as strings by default, and without the transformer the entity property is typed `number` but is actually a string at runtime, which breaks any `.toFixed()`/arithmetic call on it (this exact bug happened once — see `TradeLog`, `StockMapping`, `TradingRules`).
 - Timestamps in UTC.
 
 ## Error handling

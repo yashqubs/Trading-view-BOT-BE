@@ -9,6 +9,7 @@ Trace and verify:
 1. **Webhook entry** (`webhook/`) — IP whitelist guard runs first, then secret guard, then DTO validation. Endpoint returns 200 within 3 seconds and processes async.
 
 2. **Condition pipeline** (`signal/`) — verify the checks run in this exact order and each failure logs the correct status and stops:
+   - duplicate-delivery guard (same ticker+direction+price within 20s) → DUPLICATE_SIGNAL — technical safeguard, runs before step 1, not one of the 15 business steps
    - bot_enabled → BOT_PAUSED
    - direction allowed → BUY_DISABLED / SELL_DISABLED
    - ticker mapped → NOT_MAPPED

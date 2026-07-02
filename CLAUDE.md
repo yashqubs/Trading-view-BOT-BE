@@ -18,20 +18,22 @@ The full project documentation lives at `.claude/PROJECT_DOCUMENTATION.md`. Read
 | Signal pipeline | Section 9 (Trading Conditions) — the 15-step condition order is mandatory |
 | IG API calls | Section 15 (IG API Reference) — all 9 endpoints with versions and request bodies |
 | Trade execution | Section 10 TradeModule, Section 15 endpoints 4, 5, 6, 7 |
-| Database schema | Section 8 — every table, column, type, and all 16 trade statuses |
+| Database schema | Section 8 — every table, column, type, and all 17 trade statuses |
 | Stats module | Section 12 (Dashboard & Statistics) — what data the frontend needs |
 | User management | Section 6 — endpoints, roles, create flow |
+| Realtime / WebSocket | Section 10 RealtimeModule — internal event → broadcast event mapping |
 | Backup / restore | Section 17, `.claude/scripts/backup-to-s3.sh` |
 | Infrastructure / deployment | Sections 16, 18 |
 
 ### Most important things to know from the documentation
 
 - Section 15 lists all 9 IG REST API endpoints to implement with exact path, version header, request/response shape. Use it as the definitive reference — do not guess endpoint details.
-- Section 9 defines the exact 15-step condition check order. It must be followed precisely in `signal/signal.service.ts`.
-- There are 16 trade statuses (Section 8). Every skip path logs a specific status — never generic failure.
+- Section 9 defines the exact 15-step condition check order. It must be followed precisely in `signal/signal.service.ts`. A technical (non-business) duplicate-delivery guard runs ahead of step 1 and logs `DUPLICATE_SIGNAL` — it is not one of the 15 steps.
+- There are 17 trade statuses (Section 8), including `DUPLICATE_SIGNAL`. Every skip path logs a specific status — never generic failure.
 - Quantity = `investment_amount / signal_price` (Section 9). Signal price comes from TradingView webhook, NOT from IG (IG has no share price data — Section 19 Limitation 1).
 - SELL always checks open positions first (Section 9 step 12). This is not optional.
 - All secrets from AWS Secrets Manager (Section 7). Nothing sensitive in .env.
+- No P&L is computed or stored anywhere in this backend, on purpose — a realized-P&L feature was built and then removed (see Section 19 Limitation 1). Don't reintroduce it without discussing it first.
 
 ---
 
@@ -46,7 +48,8 @@ Trades involve real money. Correctness and safety are non-negotiable. When in do
 - NestJS (TypeScript) — modular monolith
 - TypeORM + PostgreSQL (self-hosted on EC2, localhost only)
 - AWS Secrets Manager for all sensitive secrets (never .env)
-- JWT + bcrypt + TOTP 2FA for portal auth
+- JWT + bcrypt + optional email-OTP 2FA for portal auth (replaced an earlier TOTP design — see Section 5 Layer 4)
+- Socket.IO (`@nestjs/websockets`) for pushing live updates to the portal
 - @nestjs/axios for IG REST API calls
 - @nestjs/schedule for cron (token refresh, backups)
 - @nestjs/throttler for rate limiting
@@ -57,21 +60,23 @@ Trades involve real money. Correctness and safety are non-negotiable. When in do
 
 ## Module map
 
-- `auth/` — login, JWT, 2FA, brute force lockout, token blacklist
+- `auth/` — login, JWT, email-OTP 2FA, brute force lockout, token blacklist
 - `user/` — user CRUD, roles (ADMIN/VIEWER), password reset
 - `secrets/` — fetches secrets from AWS Secrets Manager at boot
 - `ig-client/` — IG REST API session + all IG calls (login, search, place, confirm, positions, close)
 - `webhook/` — receives TradingView signals; IP whitelist + secret guards
-- `signal/` — orchestrates the 15-step condition pipeline
+- `signal/` — orchestrates the 15-step condition pipeline (plus a duplicate-delivery guard ahead of it)
 - `trading-rules/` — global trading conditions (single row)
-- `mapping/` — stock_mapping CRUD + IG market search
+- `mapping/` — stock_mapping CRUD + IG market search (reads open to any role, writes ADMIN-only)
 - `trade/` — trade execution + trade_log writing
 - `stats/` — aggregated + per-stock statistics
+- `system/` — webhook URL, IG connection status, last-received-signal status
+- `realtime/` — WebSocket gateway broadcasting domain events to the portal
 - `scheduler/` — token refresh + nightly backup cron
 
 ## Hard rules
 
-1. **Never log secrets.** IG API key, passwords, JWT secrets, webhook secret, TOTP secrets must never appear in logs, error messages, or responses.
+1. **Never log secrets.** IG API key, passwords, JWT secrets, webhook secret, OTP codes/hashes must never appear in logs, error messages, or responses.
 2. **Never put secrets in .env.** All sensitive values come from `SecretsModule` (AWS Secrets Manager). The .env file holds only non-sensitive config.
 3. **Always fail safe on trades.** If any condition is uncertain or any IG call errors, skip the trade and log it with a clear status. Never place a trade you are unsure about.
 4. **Webhook endpoint must respond within 3 seconds.** Return 200 immediately, process the signal asynchronously. TradingView cancels slow webhooks.

@@ -79,6 +79,7 @@ When a TradingView indicator fires a green (buy) or red (sell) signal, the bot a
 | Database | PostgreSQL on EC2 (self-hosted) | Cost saving; with backup strategy (see Section 17) |
 | HTTP client | NestJS Axios module | IG API calls |
 | Authentication | JWT + bcrypt + optional email-OTP 2FA | Portal login security |
+| Realtime | Socket.IO (NestJS WebSocket gateway) | Pushes trade/rules/position/system-status updates to the portal — replaces polling |
 | Secrets | AWS Secrets Manager | IG credentials never on disk |
 | Rate limiting | NestJS Throttler | Brute force / DoS protection |
 | Security headers | Helmet.js | HTTP security headers |
@@ -224,6 +225,7 @@ When a TradingView indicator fires a green (buy) or red (sell) signal, the bot a
 | **2FA (email OTP)** | **Optional, user opt-in (IMPLEMENTED)** | **Stolen password alone is not enough, for accounts that enable it** |
 | JWT expiry | 1 hour access token (15 min while a password change is pending) | Limits exposure window |
 | Token storage | HttpOnly + Secure + SameSite=Strict cookie | Prevents XSS theft + CSRF |
+| CSRF double-submit token (`CsrfGuard`) | `X-CSRF-Token` header must match the `csrf_token` cookie on every mutating request | Defense in depth alongside SameSite=Strict |
 | Brute force lockout | 5 attempts / 15 min then locked | Stops password guessing |
 | Token blacklist | Invalidated on logout | Stolen token cannot be reused |
 
@@ -454,7 +456,11 @@ A simple user management system so an admin can create additional portal users w
 
 ### Trade Log Status Values
 
-SUCCESS, FAILED, MARKET_CLOSED, NOT_MAPPED, DISABLED, NO_POSITION, BOT_PAUSED, BUY_DISABLED, SELL_DISABLED, DAILY_TOTAL_LIMIT, DAILY_TRADE_LIMIT, GLOBAL_POSITION_LIMIT, STOCK_DAILY_LIMIT, COOL_DOWN, MAX_POSITIONS_STOCK, AUTO_PAUSED
+SUCCESS, FAILED, MARKET_CLOSED, NOT_MAPPED, DISABLED, NO_POSITION, BOT_PAUSED, BUY_DISABLED, SELL_DISABLED, DAILY_TOTAL_LIMIT, DAILY_TRADE_LIMIT, GLOBAL_POSITION_LIMIT, STOCK_DAILY_LIMIT, COOL_DOWN, MAX_POSITIONS_STOCK, AUTO_PAUSED, DUPLICATE_SIGNAL
+
+> 17 statuses total. `DUPLICATE_SIGNAL` comes from the resend guard in `signal.service.ts` (see Section 9) — every webhook delivery writes a `trade_log` row, including duplicates.
+
+> No `closing_price` / `profit_loss` / `profit_loss_pct` columns. A "realized P&L" computed from the TradingView signal price on the closing trade existed briefly and was removed app-wide (frontend, `TradeService`, and a migration dropping the columns) — see Section 19 Limitation 1 for why.
 
 ---
 
@@ -463,6 +469,8 @@ SUCCESS, FAILED, MARKET_CLOSED, NOT_MAPPED, DISABLED, NO_POSITION, BOT_PAUSED, B
 ### Condition Check Order
 
 When a signal arrives, conditions are checked in sequence. The first failure stops processing.
+
+> Ahead of step 1, `SignalService.isDuplicateSignal()` runs a technical (non-business) check: if the same ticker + direction + price arrived within the last 20 seconds, the signal is logged `DUPLICATE_SIGNAL` and skipped. This exists because TradingView can resend the same webhook on delivery retry, and it's in-memory only (safe because the app runs as a single PM2 fork instance — see `ecosystem.config.js`). It is not one of the 15 numbered steps below.
 
 ```
 1.  bot_enabled = true?            → NO → BOT_PAUSED
@@ -488,7 +496,7 @@ Bot master switch, allow buy/sell toggles, daily max total investment, daily max
 
 ### Per-Stock Conditions (stock_mapping)
 
-Investment amount, max daily spend per stock, cool-down minutes, max open positions per stock, enabled toggle. Each configured individually per stock.
+Investment amount, max daily spend per stock, cool-down minutes, max open positions per stock, enabled toggle. Each configured individually per stock — writable via `PATCH /mapping/:id`, from either the Stocks list edit modal or the stock's own detail page in the portal. Reads (`GET /mapping`, `GET /mapping/:id`) are open to both roles; writes are ADMIN-only (see `MappingController`).
 
 ---
 
@@ -508,6 +516,8 @@ Investment amount, max daily spend per stock, cool-down minutes, max open positi
 | MappingModule | Stock mapping CRUD + IG market search |
 | TradeModule | Trade execution + logging |
 | StatsModule | Aggregated and per-stock statistics |
+| SystemModule | Webhook URL, IG connection status, last-received-signal status |
+| RealtimeModule | WebSocket gateway — pushes live updates to the portal |
 | SchedulerModule | Token refresh + nightly backup cron |
 
 ### AuthModule
@@ -553,6 +563,25 @@ Internal service. Methods: login, refreshSession, searchMarkets, getOpenPosition
 | GET | /stats/stock/:ticker | Detailed single-stock stats + chart data |
 | GET | /stats/status-breakdown | Count of each trade status |
 
+### SystemModule
+
+| Method | Path | Role | Description |
+|---|---|---|---|
+| GET | /system/status | ADMIN, VIEWER | `{ webhookUrl, igConnected, igSessionExpiresAt, lastSignalReceivedAt }` |
+
+`lastSignalReceivedAt` reads `MAX(signal_received_at)` off `trade_log` — since `SignalService`/`TradeService` write a row for every webhook delivery (trade, skip, or `DUPLICATE_SIGNAL`), this is an accurate "is TradingView actually reaching us" indicator without any extra state to maintain.
+
+### RealtimeModule
+
+`RealtimeGateway` (Socket.IO), authenticated by `WsAuthService` off the same JWT cookie as the REST API. Listens for internal domain events via `EventEmitter2` and rebroadcasts them to connected portal clients — business services never touch sockets directly.
+
+| Internal event | Broadcast as | Emitted by |
+|---|---|---|
+| `trade.created` | `trade:created` | `TradeService` — every `trade_log` write |
+| `rules.updated` | `rules:updated` | `TradingRulesService` |
+| `ig.session.changed` | `system:status` | `IgClientService` |
+| `positions.updated` | `positions:updated` | `TradeService`, and once per client on connect |
+
 ---
 
 ## 11. Frontend — React
@@ -564,11 +593,11 @@ Internal service. Methods: login, refreshSession, searchMarkets, getOpenPosition
 | Login | /login | Email + password + 2FA |
 | Dashboard | / | Global stats + charts |
 | Stocks | /stocks | Per-stock config table |
-| Stock Detail | /stocks/:ticker | Single-stock statistics + charts |
+| Stock Detail | /stocks/:ticker | Single-stock statistics + charts + per-stock trading conditions |
 | Trades | /trades | Full trade history with filters |
 | Conditions | /conditions | Global trading rules |
 | Users | /users | User management (Admin only) |
-| Settings | /settings | Webhook URL, IG status, password, 2FA |
+| Settings | /settings | Webhook URL, IG status, last TradingView signal received, password, 2FA |
 
 ### Stack
 
@@ -890,7 +919,7 @@ If the server is down when a signal fires, TradingView's webhook fails and that 
 - [ ] Harden SSH (key-only, disable passwords)
 - [ ] Clone repo, install deps, `pnpm audit`
 - [ ] Create non-sensitive .env
-- [ ] Run migrations (5 tables)
+- [ ] Run all pending migrations (`pnpm migration:run`)
 - [ ] Run seed script (first admin user + trading_rules row)
 - [ ] Build NestJS, start with PM2
 - [ ] Nginx reverse proxy + serve frontend build
@@ -923,7 +952,7 @@ If the server is down when a signal fires, TradingView's webhook fails and that 
 
 | # | Limitation | Detail |
 |---|---|---|
-| 1 | No real-time P&L | IG API has no share price data; view P&L on IG platform |
+| 1 | No P&L shown in the portal, at all | IG API has no share price data for shares. A "realized P&L" was briefly computed from TradingView signal prices on close, but the numbers weren't authoritative (not IG's actual fill price) so it was removed app-wide (`calculate-profit-loss.util.ts` deleted, `TradeService` no longer computes it, columns dropped by migration `1700000400000-RemoveTradeLogProfitLoss`). View real P&L on the IG platform directly |
 | 2 | API key needs live account | Cannot create from standalone demo |
 | 3 | SELL could short without position check | Mitigated by mandatory position check |
 | 4 | IG minimum deal size | Low amounts may be rejected; raise investment amount |
@@ -937,5 +966,5 @@ If the server is down when a signal fires, TradingView's webhook fails and that 
 
 ---
 
-*Last updated: June 2026*
+*Last updated: July 2026*
 *Architecture: Smit Patel | Implementation: Yash Modi | Client: Vipul Patel*
