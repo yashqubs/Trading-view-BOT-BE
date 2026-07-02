@@ -339,6 +339,7 @@ A simple user management system so an admin can create additional portal users w
 | DB_PORT | PostgreSQL port | 5432 |
 | DB_NAME | Database name | trading_view_bot |
 | FRONTEND_ORIGIN | Portal URL (CORS + emailed portal links) | https://portal.your-domain.com |
+| PUBLIC_BASE_URL | This backend's own public URL — builds the webhook URL shown on Settings (`{PUBLIC_BASE_URL}/webhook/signal`) | https://api.your-domain.com |
 | EMAIL_FROM | Verified SES sender identity | no-reply@your-domain.com |
 | SECRET_NAME_IG | Secrets Manager key name | prod/trading-bot/ig |
 | SECRET_NAME_APP | Secrets Manager key name | prod/trading-bot/app |
@@ -727,7 +728,7 @@ SELL alert:
 ```
 
 ### Step 3 — Webhook URL
-Notifications tab → Webhook URL → `https://your-domain.com/webhook/signal` on both alerts.
+Notifications tab → Webhook URL → `https://your-domain.com/webhook/signal` on both alerts. Don't hand-type this — copy it from the portal's **Settings** page (System status → Webhook URL → copy icon), which reads it straight from the server's own `PUBLIC_BASE_URL`, so it's guaranteed to match what the server actually expects.
 
 ### TradingView Requirements
 
