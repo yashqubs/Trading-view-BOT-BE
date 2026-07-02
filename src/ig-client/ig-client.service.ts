@@ -1,6 +1,7 @@
 import { HttpService } from '@nestjs/axios';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { AxiosError, AxiosRequestConfig } from 'axios';
 import { firstValueFrom } from 'rxjs';
 import { Direction } from '../common/enums';
@@ -16,6 +17,12 @@ import {
 } from './ig-client.types';
 
 const SESSION_LIFETIME_MS = 4 * 60 * 60 * 1000; // IG session tokens are valid ~4 hours
+
+// Transient errors only — 4xx auth/validation/business-rejections fail immediately,
+// never retried, so a genuinely rejected trade is never silently retried into existing.
+const RETRYABLE_STATUS_CODES = new Set([429, 500, 502, 503, 504]);
+const MAX_REQUEST_ATTEMPTS = 3;
+const RETRY_BASE_DELAY_MS = 300;
 
 interface IgSession {
   cst: string;
@@ -44,6 +51,7 @@ export class IgClientService {
     private readonly httpService: HttpService,
     private readonly configService: ConfigService,
     private readonly secretsService: SecretsService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   isSessionActive(): boolean {
@@ -77,9 +85,21 @@ export class IgClientService {
         expiresAt: Date.now() + SESSION_LIFETIME_MS,
       };
       this.logger.log('IG session established');
+      this.emitSessionChanged();
     } catch (error) {
       this.session = null;
+      this.emitSessionChanged();
       throw this.toIgApiException(error);
+    }
+  }
+
+  // See trade.service.ts's emitTradeCreated for why this swallows errors —
+  // a broadcast must never break session establishment/refresh.
+  private emitSessionChanged(): void {
+    try {
+      this.eventEmitter.emit('ig.session.changed', { igConnected: this.isSessionActive() });
+    } catch (error) {
+      this.logger.warn(`Failed to emit ig.session.changed: ${(error as Error).message}`);
     }
   }
 
@@ -213,12 +233,30 @@ export class IgClientService {
       },
     };
 
-    try {
-      const response = await firstValueFrom(this.httpService.request<T>(config));
-      return response.data;
-    } catch (error) {
-      throw this.toIgApiException(error);
+    for (let attempt = 1; attempt <= MAX_REQUEST_ATTEMPTS; attempt++) {
+      try {
+        const response = await firstValueFrom(this.httpService.request<T>(config));
+        return response.data;
+      } catch (error) {
+        const status = (error as AxiosError).response?.status;
+        const isRetryable = status !== undefined && RETRYABLE_STATUS_CODES.has(status);
+        if (!isRetryable || attempt === MAX_REQUEST_ATTEMPTS) {
+          throw this.toIgApiException(error);
+        }
+        this.logger.warn(
+          `IG API ${options.method} ${options.url} failed with ${status}, retrying (attempt ${attempt}/${MAX_REQUEST_ATTEMPTS})`,
+        );
+        await this.delay(RETRY_BASE_DELAY_MS * 2 ** (attempt - 1));
+      }
     }
+
+    // Unreachable — the loop above always either returns or throws — but
+    // keeps the function's return type honest for TypeScript.
+    throw new IgApiException('UNKNOWN_ERROR');
+  }
+
+  private delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   private baseHeaders(version: number): Record<string, string> {

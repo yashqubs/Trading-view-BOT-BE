@@ -1,5 +1,6 @@
 import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn } from 'typeorm';
 import { Direction, TradeStatus } from '../../common/enums';
+import { decimalTransformer } from '../../common/transformers/decimal.transformer';
 
 @Entity('trade_log')
 export class TradeLog {
@@ -15,8 +16,8 @@ export class TradeLog {
   @Column({ type: 'varchar', length: 4 })
   direction: Direction;
 
-  @Column({ type: 'decimal', precision: 12, scale: 4, name: 'signal_price' })
-  signalPrice: string;
+  @Column({ type: 'decimal', precision: 12, scale: 4, name: 'signal_price', transformer: decimalTransformer })
+  signalPrice: number;
 
   @Column({
     type: 'decimal',
@@ -24,38 +25,12 @@ export class TradeLog {
     scale: 2,
     nullable: true,
     name: 'investment_amount',
+    transformer: decimalTransformer,
   })
-  investmentAmount: string | null;
+  investmentAmount: number | null;
 
-  @Column({
-    type: 'decimal',
-    precision: 15,
-    scale: 4,
-    nullable: true,
-    name: 'closing_price',
-  })
-  closingPrice: string | null;
-
-  @Column({
-    type: 'decimal',
-    precision: 15,
-    scale: 2,
-    nullable: true,
-    name: 'profit_loss',
-  })
-  profitLoss: string | null;
-
-  @Column({
-    type: 'decimal',
-    precision: 8,
-    scale: 4,
-    nullable: true,
-    name: 'profit_loss_pct',
-  })
-  profitLossPct: string | null;
-
-  @Column({ type: 'decimal', precision: 12, scale: 4, nullable: true })
-  quantity: string | null;
+  @Column({ type: 'decimal', precision: 12, scale: 4, nullable: true, transformer: decimalTransformer })
+  quantity: number | null;
 
   @Column({ type: 'varchar', length: 100, nullable: true, name: 'deal_reference' })
   dealReference: string | null;

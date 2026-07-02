@@ -1,4 +1,5 @@
 import { Column, Entity, PrimaryColumn, UpdateDateColumn, ValueTransformer } from 'typeorm';
+import { decimalTransformer } from '../../common/transformers/decimal.transformer';
 
 // Postgres `time` columns round-trip as "HH:MM:SS" — the API contract (and
 // the input DTO) only deals in "HH:MM", so trim seconds on the way out.
@@ -31,8 +32,9 @@ export class TradingRules {
     scale: 2,
     nullable: true,
     name: 'daily_max_total_investment',
+    transformer: decimalTransformer,
   })
-  dailyMaxTotalInvestment: string | null;
+  dailyMaxTotalInvestment: number | null;
 
   @Column({ type: 'int', nullable: true, name: 'daily_max_trade_count' })
   dailyMaxTradeCount: number | null;

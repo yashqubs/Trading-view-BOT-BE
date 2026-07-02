@@ -1,4 +1,5 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Between, Repository, SelectQueryBuilder } from 'typeorm';
 import { Direction, TradeStatus } from '../common/enums';
@@ -12,7 +13,6 @@ import { SortOrder, TRADE_LOG_SORT_COLUMN, TradeLogSortBy } from './dto/trade-lo
 import { TradeLog } from './entities/trade-log.entity';
 import { SignalInput } from './interfaces/signal-input.interface';
 import { TradeLogSummary } from './interfaces/trade-log-summary.interface';
-import { calculateProfitLoss } from './utils/calculate-profit-loss.util';
 import { calculateQuantity } from './utils/calculate-quantity.util';
 
 export interface PaginatedTradeLogs {
@@ -23,10 +23,13 @@ export interface PaginatedTradeLogs {
 
 @Injectable()
 export class TradeService {
+  private readonly logger = new Logger(TradeService.name);
+
   constructor(
     @InjectRepository(TradeLog) private readonly tradeLogRepository: Repository<TradeLog>,
     private readonly igClientService: IgClientService,
     private readonly tradingRulesService: TradingRulesService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   async logSkip(
@@ -34,17 +37,19 @@ export class TradeService {
     status: TradeStatus,
     igEpic: string | null = null,
   ): Promise<TradeLog> {
-    return this.tradeLogRepository.save(
+    const skipped = await this.tradeLogRepository.save(
       this.tradeLogRepository.create({
         tvTicker: input.tvTicker,
         igEpic,
         direction: input.direction,
-        signalPrice: input.signalPrice.toFixed(4),
+        signalPrice: input.signalPrice,
         status,
         skipReason: status,
         signalReceivedAt: input.signalReceivedAt,
       }),
     );
+    this.emitTradeCreated(skipped);
+    return skipped;
   }
 
   /**
@@ -63,9 +68,9 @@ export class TradeService {
       tvTicker: input.tvTicker,
       igEpic: mapping.igEpic,
       direction: input.direction,
-      signalPrice: input.signalPrice.toFixed(4),
+      signalPrice: input.signalPrice,
       investmentAmount: mapping.investmentAmount,
-      quantity: quantity.toFixed(4),
+      quantity,
       signalReceivedAt: input.signalReceivedAt,
     };
 
@@ -97,25 +102,18 @@ export class TradeService {
         return this.saveFailedAndHandle(baseLog, dealReference, confirmation.reason ?? 'REJECTED');
       }
 
-      const closeMetrics =
-        input.direction === Direction.SELL && existingPosition
-          ? await this.buildCloseMetrics(input, existingPosition)
-          : null;
-
       const successLog = await this.tradeLogRepository.save(
         this.tradeLogRepository.create({
           ...baseLog,
-          ...(closeMetrics ?? {}),
-          quantity:
-            input.direction === Direction.SELL
-              ? existingPosition!.size.toFixed(4)
-              : baseLog.quantity,
+          quantity: input.direction === Direction.SELL ? existingPosition!.size : baseLog.quantity,
           status: TradeStatus.SUCCESS,
           dealReference,
           dealId: confirmation.dealId,
           executedAt: new Date(),
         }),
       );
+      this.emitTradeCreated(successLog);
+      await this.emitPositionsUpdated();
 
       await this.tradingRulesService.resetFailureCount();
       return successLog;
@@ -184,14 +182,10 @@ export class TradeService {
         `COALESCE(SUM(CASE WHEN trade.status = :successStatus AND trade.investmentAmount IS NOT NULL THEN trade.investmentAmount ELSE 0 END), 0)`,
         'totalInvested',
       )
-      .addSelect(`SUM(trade.profitLoss)`, 'totalProfitLoss')
-      .addSelect(`COUNT(trade.profitLoss)`, 'closedCount')
       .addSelect(
         `AVG(CASE WHEN trade.status = :successStatus AND trade.investmentAmount IS NOT NULL THEN trade.investmentAmount END)`,
         'avgInvestment',
       )
-      .addSelect(`SUM(CASE WHEN trade.profitLoss > 0 THEN 1 ELSE 0 END)`, 'winCount')
-      .addSelect(`SUM(CASE WHEN trade.profitLoss < 0 THEN 1 ELSE 0 END)`, 'lossCount')
       .setParameters({
         successStatus: TradeStatus.SUCCESS,
         failedStatus: TradeStatus.FAILED,
@@ -206,21 +200,11 @@ export class TradeService {
         buyCount: string;
         sellCount: string;
         totalInvested: string;
-        totalProfitLoss: string | null;
-        closedCount: string;
         avgInvestment: string;
-        winCount: string;
-        lossCount: string;
       }>();
 
     const totalTrades = Number(raw?.totalTrades ?? 0);
     const successCount = Number(raw?.successCount ?? 0);
-    const closedCount = Number(raw?.closedCount ?? 0);
-    const totalProfitLossRaw = raw?.totalProfitLoss;
-
-    const totalProfitLoss =
-      closedCount > 0 && totalProfitLossRaw !== null ? Number(totalProfitLossRaw) : null;
-
     const avgInvestmentValue = raw?.avgInvestment;
 
     return {
@@ -231,53 +215,12 @@ export class TradeService {
       buyCount: Number(raw?.buyCount ?? 0),
       sellCount: Number(raw?.sellCount ?? 0),
       totalInvested: Number(raw?.totalInvested ?? 0),
-      totalProfitLoss,
-      avgProfitLoss:
-        closedCount > 0 && totalProfitLoss !== null ? totalProfitLoss / closedCount : null,
       successRate: totalTrades > 0 ? (successCount / totalTrades) * 100 : 0,
       avgInvestment:
         avgInvestmentValue !== null && avgInvestmentValue !== undefined
           ? Number(avgInvestmentValue)
           : null,
-      winCount: Number(raw?.winCount ?? 0),
-      lossCount: Number(raw?.lossCount ?? 0),
     };
-  }
-
-  private async buildCloseMetrics(
-    input: SignalInput,
-    existingPosition: IgPosition,
-  ): Promise<Pick<TradeLog, 'closingPrice' | 'profitLoss' | 'profitLossPct'>> {
-    const openingBuy = await this.findOpeningBuyTrade(input.tvTicker);
-    if (!openingBuy) {
-      return {
-        closingPrice: input.signalPrice.toFixed(4),
-        profitLoss: null,
-        profitLossPct: null,
-      };
-    }
-
-    const entryPrice = Number(openingBuy.signalPrice);
-    const investmentAmount = Number(openingBuy.investmentAmount ?? 0);
-    const { profitLoss, profitLossPct } = calculateProfitLoss({
-      entryPrice,
-      closingPrice: input.signalPrice,
-      quantity: existingPosition.size,
-      investmentAmount,
-    });
-
-    return {
-      closingPrice: input.signalPrice.toFixed(4),
-      profitLoss: profitLoss.toFixed(2),
-      profitLossPct: profitLossPct.toFixed(4),
-    };
-  }
-
-  private findOpeningBuyTrade(tvTicker: string): Promise<TradeLog | null> {
-    return this.tradeLogRepository.findOne({
-      where: { tvTicker, direction: Direction.BUY, status: TradeStatus.SUCCESS },
-      order: { executedAt: 'DESC' },
-    });
   }
 
   async countSuccessToday(): Promise<number> {
@@ -311,6 +254,18 @@ export class TradeService {
     });
   }
 
+  // Every webhook delivery writes a trade_log row via logSkip() or
+  // executeTrade() — including duplicates and every skip reason — so the
+  // most recent signalReceivedAt here is exactly "when did TradingView last
+  // actually hit our webhook", independent of whether that signal traded.
+  async getLastSignalReceivedAt(): Promise<Date | null> {
+    const latest = await this.tradeLogRepository.findOne({
+      order: { signalReceivedAt: 'DESC' },
+      select: ['signalReceivedAt'],
+    });
+    return latest?.signalReceivedAt ?? null;
+  }
+
   private async saveFailedAndHandle(
     baseLog: Partial<TradeLog>,
     dealReference: string | null,
@@ -324,15 +279,37 @@ export class TradeService {
         errorMessage,
       }),
     );
+    this.emitTradeCreated(failedLog);
 
     const shouldAutoPause = await this.tradingRulesService.recordFailure();
     if (shouldAutoPause) {
-      await this.tradeLogRepository.save(
+      const autoPausedLog = await this.tradeLogRepository.save(
         this.tradeLogRepository.create({ ...baseLog, status: TradeStatus.AUTO_PAUSED }),
       );
+      this.emitTradeCreated(autoPausedLog);
     }
 
     return failedLog;
+  }
+
+  // A broadcast is a side effect of something already durably saved — it must
+  // never throw back into trade execution, which is why both of these swallow
+  // and log rather than propagate.
+  private emitTradeCreated(trade: TradeLog): void {
+    try {
+      this.eventEmitter.emit('trade.created', trade);
+    } catch (error) {
+      this.logger.warn(`Failed to emit trade.created: ${(error as Error).message}`);
+    }
+  }
+
+  private async emitPositionsUpdated(): Promise<void> {
+    try {
+      const positions = await this.igClientService.getOpenPositions();
+      this.eventEmitter.emit('positions.updated', positions);
+    } catch (error) {
+      this.logger.warn(`Failed to emit positions.updated: ${(error as Error).message}`);
+    }
   }
 
   private todayRange(): [Date, Date] {

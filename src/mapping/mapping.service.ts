@@ -60,8 +60,8 @@ export class MappingService {
       instrumentName: dto.instrumentName,
       instrumentType: dto.instrumentType,
       enabled: dto.enabled ?? true,
-      investmentAmount: dto.investmentAmount.toFixed(2),
-      maxDailySpend: dto.maxDailySpend !== undefined ? dto.maxDailySpend.toFixed(2) : null,
+      investmentAmount: dto.investmentAmount,
+      maxDailySpend: dto.maxDailySpend ?? null,
       coolDownMinutes: dto.coolDownMinutes ?? null,
       maxOpenPositions: dto.maxOpenPositions ?? 1,
     });
@@ -76,9 +76,8 @@ export class MappingService {
     if (dto.instrumentName !== undefined) mapping.instrumentName = dto.instrumentName;
     if (dto.instrumentType !== undefined) mapping.instrumentType = dto.instrumentType;
     if (dto.enabled !== undefined) mapping.enabled = dto.enabled;
-    if (dto.investmentAmount !== undefined)
-      mapping.investmentAmount = dto.investmentAmount.toFixed(2);
-    if (dto.maxDailySpend !== undefined) mapping.maxDailySpend = dto.maxDailySpend.toFixed(2);
+    if (dto.investmentAmount !== undefined) mapping.investmentAmount = dto.investmentAmount;
+    if (dto.maxDailySpend !== undefined) mapping.maxDailySpend = dto.maxDailySpend;
     if (dto.coolDownMinutes !== undefined) mapping.coolDownMinutes = dto.coolDownMinutes;
     if (dto.maxOpenPositions !== undefined) mapping.maxOpenPositions = dto.maxOpenPositions;
 

@@ -6,6 +6,7 @@ import { json } from 'express';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { GlobalExceptionFilter } from './common/filters/http-exception.filter';
+import { ConfiguredSocketIoAdapter } from './realtime/configured-socket-io.adapter';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule, { bodyParser: true });
@@ -20,6 +21,8 @@ async function bootstrap(): Promise<void> {
     origin: configService.get<string>('FRONTEND_ORIGIN'),
     credentials: true,
   });
+
+  app.useWebSocketAdapter(new ConfiguredSocketIoAdapter(app));
 
   app.useGlobalPipes(
     new ValidationPipe({

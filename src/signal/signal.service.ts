@@ -24,9 +24,21 @@ import { isMarketOpen } from './utils/market-hours.util';
  * therefore go: 1-5 (kill switch / mapping / market hours guards, which are
  * legitimate even for closes) straight to 12 (position check) then execute.
  */
+// TradingView can resend the exact same webhook alert on delivery retry. The
+// payload carries no alert ID or TradingView-supplied timestamp to key off
+// (see WebhookSignalDto), so an identical ticker+direction+price arriving
+// again within this window is treated as a resend, not a new signal. Long
+// enough to catch a delivery retry; short enough that the same ticker/
+// direction/price legitimately recurring later the same day still executes.
+const DUPLICATE_SIGNAL_WINDOW_MS = 20_000;
+
 @Injectable()
 export class SignalService {
   private readonly logger = new Logger(SignalService.name);
+
+  // In-memory only — safe because this app runs as a single PM2 fork instance
+  // (see ecosystem.config.js); a second process would need a shared store.
+  private readonly recentSignals = new Map<string, number>();
 
   constructor(
     private readonly tradingRulesService: TradingRulesService,
@@ -36,6 +48,12 @@ export class SignalService {
   ) {}
 
   async processSignal(input: SignalInput): Promise<TradeLog> {
+    // Not one of the documented 15 pipeline steps — a technical safeguard
+    // against re-processing the same webhook delivery, checked ahead of them.
+    if (this.isDuplicateSignal(input)) {
+      return this.tradeService.logSkip(input, TradeStatus.DUPLICATE_SIGNAL);
+    }
+
     const rules = await this.tradingRulesService.get();
 
     // 1. bot_enabled
@@ -85,10 +103,14 @@ export class SignalService {
         }
       }
 
+      // 8 & 11 both need the current open positions — step 11 runs
+      // unconditionally for every BUY, so fetching once here (rather than
+      // once per check) never does an unnecessary IG call.
+      const openPositions = await this.igClientService.getOpenPositions();
+
       // 8. global open positions
       if (rules.maxOpenPositionsGlobal !== null) {
-        const globalPositionCount = await this.igClientService.getOpenPositionCount();
-        if (globalPositionCount >= rules.maxOpenPositionsGlobal) {
+        if (openPositions.length >= rules.maxOpenPositionsGlobal) {
           return this.tradeService.logSkip(
             input,
             TradeStatus.GLOBAL_POSITION_LIMIT,
@@ -121,7 +143,9 @@ export class SignalService {
       }
 
       // 11. stock max open positions
-      const stockPositionCount = await this.igClientService.getOpenPositionCount(mapping.igEpic);
+      const stockPositionCount = openPositions.filter(
+        (position) => position.epic === mapping.igEpic,
+      ).length;
       if (stockPositionCount >= mapping.maxOpenPositions) {
         return this.tradeService.logSkip(input, TradeStatus.MAX_POSITIONS_STOCK, mapping.igEpic);
       }
@@ -140,5 +164,23 @@ export class SignalService {
     // 13-15. calculate quantity, execute on IG, log SUCCESS/FAILED, handle failure counter
     this.logger.log(`Executing ${input.direction} for ${input.tvTicker} @ ${input.signalPrice}`);
     return this.tradeService.executeTrade(input, mapping, existingPosition);
+  }
+
+  private isDuplicateSignal(input: SignalInput): boolean {
+    const key = `${input.tvTicker}:${input.direction}:${input.signalPrice}`;
+    const now = input.signalReceivedAt.getTime();
+    this.pruneExpiredSignals(now);
+
+    const lastSeenAt = this.recentSignals.get(key);
+    this.recentSignals.set(key, now);
+    return lastSeenAt !== undefined && now - lastSeenAt < DUPLICATE_SIGNAL_WINDOW_MS;
+  }
+
+  private pruneExpiredSignals(now: number): void {
+    for (const [key, seenAt] of this.recentSignals) {
+      if (now - seenAt >= DUPLICATE_SIGNAL_WINDOW_MS) {
+        this.recentSignals.delete(key);
+      }
+    }
   }
 }

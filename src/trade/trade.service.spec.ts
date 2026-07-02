@@ -1,3 +1,4 @@
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { Direction, TradeStatus } from '../common/enums';
@@ -35,7 +36,7 @@ describe('TradeService', () => {
     instrumentName: 'Apple Inc',
     instrumentType: 'SHARES',
     enabled: true,
-    investmentAmount: '1000.00',
+    investmentAmount: 1000,
     maxDailySpend: null,
     coolDownMinutes: null,
     maxOpenPositions: 1,
@@ -62,7 +63,7 @@ describe('TradeService', () => {
             placeOrder: jest.fn(),
             closePosition: jest.fn(),
             confirmDeal: jest.fn(),
-            getOpenPositions: jest.fn(),
+            getOpenPositions: jest.fn().mockResolvedValue([]),
             getOpenPositionCount: jest.fn(),
           },
         },
@@ -73,6 +74,7 @@ describe('TradeService', () => {
             resetFailureCount: jest.fn().mockResolvedValue(undefined),
           },
         },
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
       ],
     }).compile();
 
@@ -162,12 +164,7 @@ describe('TradeService', () => {
       size: 10,
     };
 
-    it('closes the existing position using its full size and records P&L', async () => {
-      tradeLogRepository.findOne.mockResolvedValue({
-        signalPrice: '100.0000',
-        investmentAmount: '1000.00',
-      });
-
+    it('closes the existing position using its full size', async () => {
       igClientService.closePosition.mockResolvedValue({ dealReference: 'REF-3' });
       igClientService.confirmDeal.mockResolvedValue({
         dealId: 'DEAL-3',
@@ -185,9 +182,6 @@ describe('TradeService', () => {
         size: 10,
       });
       expect(result.status).toBe(TradeStatus.SUCCESS);
-      expect(result.closingPrice).toBe('110.0000');
-      expect(result.profitLoss).toBe('100.00');
-      expect(result.profitLossPct).toBe('10.0000');
     });
 
     it('logs FAILED if executeTrade is somehow called for SELL with no position', async () => {

@@ -5,6 +5,7 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
+import { decimalTransformer } from '../../common/transformers/decimal.transformer';
 
 @Entity('stock_mapping')
 export class StockMapping {
@@ -26,8 +27,14 @@ export class StockMapping {
   @Column({ type: 'boolean', default: true })
   enabled: boolean;
 
-  @Column({ type: 'decimal', precision: 12, scale: 2, name: 'investment_amount' })
-  investmentAmount: string;
+  @Column({
+    type: 'decimal',
+    precision: 12,
+    scale: 2,
+    name: 'investment_amount',
+    transformer: decimalTransformer,
+  })
+  investmentAmount: number;
 
   @Column({
     type: 'decimal',
@@ -35,8 +42,9 @@ export class StockMapping {
     scale: 2,
     nullable: true,
     name: 'max_daily_spend',
+    transformer: decimalTransformer,
   })
-  maxDailySpend: string | null;
+  maxDailySpend: number | null;
 
   @Column({ type: 'int', nullable: true, name: 'cool_down_minutes' })
   coolDownMinutes: number | null;

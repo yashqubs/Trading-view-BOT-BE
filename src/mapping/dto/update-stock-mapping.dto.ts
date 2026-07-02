@@ -22,10 +22,13 @@ export class UpdateStockMappingDto {
   @IsPositive()
   investmentAmount?: number;
 
+  // Optional AND nullable — the frontend sends `null` explicitly to clear
+  // the limit back to "no limit" (EditStockModal / StockConditionsCard),
+  // not just omit the field.
   @IsOptional()
   @IsNumber()
   @IsPositive()
-  maxDailySpend?: number;
+  maxDailySpend?: number | null;
 
   @IsOptional()
   @IsInt()

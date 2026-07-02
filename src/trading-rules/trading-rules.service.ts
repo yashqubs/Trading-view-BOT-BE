@@ -1,4 +1,5 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { UpdateTradingRulesDto } from './dto/update-trading-rules.dto';
@@ -8,9 +9,12 @@ const SINGLETON_ID = 1;
 
 @Injectable()
 export class TradingRulesService {
+  private readonly logger = new Logger(TradingRulesService.name);
+
   constructor(
     @InjectRepository(TradingRules)
     private readonly tradingRulesRepository: Repository<TradingRules>,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   async get(): Promise<TradingRules> {
@@ -33,7 +37,7 @@ export class TradingRulesService {
     if (dto.allowBuy !== undefined) rules.allowBuy = dto.allowBuy;
     if (dto.allowSell !== undefined) rules.allowSell = dto.allowSell;
     if (dto.dailyMaxTotalInvestment !== undefined) {
-      rules.dailyMaxTotalInvestment = dto.dailyMaxTotalInvestment.toFixed(2);
+      rules.dailyMaxTotalInvestment = dto.dailyMaxTotalInvestment;
     }
     if (dto.dailyMaxTradeCount !== undefined) rules.dailyMaxTradeCount = dto.dailyMaxTradeCount;
     if (dto.maxOpenPositionsGlobal !== undefined) {
@@ -47,7 +51,9 @@ export class TradingRulesService {
     if (dto.tradeWeekdaysOnly !== undefined) rules.tradeWeekdaysOnly = dto.tradeWeekdaysOnly;
 
     rules.updatedBy = updatedBy;
-    return this.tradingRulesRepository.save(rules);
+    const saved = await this.tradingRulesRepository.save(rules);
+    this.emitRulesUpdated(saved);
+    return saved;
   }
 
   /** Called by TradeModule after a FAILED trade. Returns true if the auto-pause threshold was hit. */
@@ -61,7 +67,8 @@ export class TradingRulesService {
       rules.autoPaused = true;
     }
 
-    await this.tradingRulesRepository.save(rules);
+    const saved = await this.tradingRulesRepository.save(rules);
+    this.emitRulesUpdated(saved);
     return shouldAutoPause;
   }
 
@@ -70,7 +77,18 @@ export class TradingRulesService {
     const rules = await this.get();
     if (rules.consecutiveFailureCount !== 0) {
       rules.consecutiveFailureCount = 0;
-      await this.tradingRulesRepository.save(rules);
+      const saved = await this.tradingRulesRepository.save(rules);
+      this.emitRulesUpdated(saved);
+    }
+  }
+
+  // See trade.service.ts's emitTradeCreated for why this swallows errors
+  // rather than propagating — a broadcast must never break rules persistence.
+  private emitRulesUpdated(rules: TradingRules): void {
+    try {
+      this.eventEmitter.emit('rules.updated', rules);
+    } catch (error) {
+      this.logger.warn(`Failed to emit rules.updated: ${(error as Error).message}`);
     }
   }
 }

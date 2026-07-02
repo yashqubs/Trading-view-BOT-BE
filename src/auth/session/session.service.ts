@@ -1,3 +1,4 @@
+import { randomBytes } from 'crypto';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
@@ -30,16 +31,29 @@ export class SessionService {
       secret: this.secretsService.get('JWT_SECRET'),
       expiresIn: pending ? PENDING_SESSION_EXPIRY : SESSION_EXPIRY,
     });
+    const isProduction = this.configService.get<string>('NODE_ENV') === 'production';
+    const maxAge = pending ? PENDING_SESSION_COOKIE_MAX_AGE_MS : SESSION_COOKIE_MAX_AGE_MS;
 
     response.cookie('access_token', token, {
       httpOnly: true,
-      secure: this.configService.get<string>('NODE_ENV') === 'production',
+      secure: isProduction,
       sameSite: 'strict',
-      maxAge: pending ? PENDING_SESSION_COOKIE_MAX_AGE_MS : SESSION_COOKIE_MAX_AGE_MS,
+      maxAge,
+    });
+
+    // Deliberately NOT httpOnly — the frontend reads this cookie's value and
+    // echoes it back as the X-CSRF-Token header (see CsrfGuard). It carries
+    // no authority on its own, only a random value to double-submit.
+    response.cookie('csrf_token', randomBytes(32).toString('hex'), {
+      httpOnly: false,
+      secure: isProduction,
+      sameSite: 'strict',
+      maxAge,
     });
   }
 
   clearCookie(response: Response): void {
     response.clearCookie('access_token');
+    response.clearCookie('csrf_token');
   }
 }

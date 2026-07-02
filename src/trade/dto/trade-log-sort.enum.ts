@@ -3,7 +3,6 @@ export enum TradeLogSortBy {
   EXECUTED_AT = 'executedAt',
   SIGNAL_PRICE = 'signalPrice',
   INVESTMENT_AMOUNT = 'investmentAmount',
-  PROFIT_LOSS = 'profitLoss',
   TV_TICKER = 'tvTicker',
 }
 
@@ -17,6 +16,5 @@ export const TRADE_LOG_SORT_COLUMN: Record<TradeLogSortBy, string> = {
   [TradeLogSortBy.EXECUTED_AT]: 'trade.executedAt',
   [TradeLogSortBy.SIGNAL_PRICE]: 'trade.signalPrice',
   [TradeLogSortBy.INVESTMENT_AMOUNT]: 'trade.investmentAmount',
-  [TradeLogSortBy.PROFIT_LOSS]: 'trade.profitLoss',
   [TradeLogSortBy.TV_TICKER]: 'trade.tvTicker',
 };

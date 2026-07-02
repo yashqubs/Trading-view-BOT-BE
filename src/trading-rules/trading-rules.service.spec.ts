@@ -1,3 +1,4 @@
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { TradingRules } from './entities/trading-rules.entity';
@@ -18,6 +19,7 @@ describe('TradingRulesService', () => {
       providers: [
         TradingRulesService,
         { provide: getRepositoryToken(TradingRules), useValue: repository },
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
       ],
     }).compile();
 

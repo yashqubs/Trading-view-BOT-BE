@@ -13,7 +13,7 @@ export class SystemController {
   constructor(private readonly systemService: SystemService) {}
 
   @Get('status')
-  getStatus(): SystemStatus {
+  getStatus(): Promise<SystemStatus> {
     return this.systemService.getStatus();
   }
 }

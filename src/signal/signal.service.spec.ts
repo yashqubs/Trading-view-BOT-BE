@@ -40,7 +40,7 @@ function buildMapping(overrides: Partial<StockMapping> = {}): StockMapping {
     instrumentName: 'Apple Inc',
     instrumentType: 'SHARES',
     enabled: true,
-    investmentAmount: '1000.00',
+    investmentAmount: 1000,
     maxDailySpend: null,
     coolDownMinutes: null,
     maxOpenPositions: 1,
@@ -164,7 +164,7 @@ describe('SignalService — condition pipeline', () => {
   });
 
   it('step 7: stops with DAILY_TOTAL_LIMIT on BUY when the cap would be exceeded', async () => {
-    tradingRulesService.get.mockResolvedValue(buildRules({ dailyMaxTotalInvestment: '1500.00' }));
+    tradingRulesService.get.mockResolvedValue(buildRules({ dailyMaxTotalInvestment: 1500 }));
     tradeService.sumInvestmentSuccessToday.mockResolvedValue(1000);
 
     const result = await service.processSignal(buildInput({ direction: Direction.BUY }));
@@ -174,11 +174,27 @@ describe('SignalService — condition pipeline', () => {
 
   it('step 8: stops with GLOBAL_POSITION_LIMIT on BUY when global cap is reached', async () => {
     tradingRulesService.get.mockResolvedValue(buildRules({ maxOpenPositionsGlobal: 10 }));
-    igClientService.getOpenPositionCount.mockResolvedValue(10);
+    igClientService.getOpenPositions.mockResolvedValue(
+      Array.from({ length: 10 }, (_, i) => ({
+        dealId: `D${i}`,
+        epic: 'OTHER.EPIC',
+        direction: Direction.BUY,
+        size: 1,
+      })),
+    );
 
     const result = await service.processSignal(buildInput({ direction: Direction.BUY }));
 
     expect(result.status).toBe(TradeStatus.GLOBAL_POSITION_LIMIT);
+  });
+
+  it('fetches open positions only once on BUY (shared by steps 8 and 11)', async () => {
+    tradingRulesService.get.mockResolvedValue(buildRules({ maxOpenPositionsGlobal: 10 }));
+    igClientService.getOpenPositions.mockResolvedValue([]);
+
+    await service.processSignal(buildInput({ direction: Direction.BUY }));
+
+    expect(igClientService.getOpenPositions).toHaveBeenCalledTimes(1);
   });
 
   it('step 9: stops with COOL_DOWN on BUY when within the cool-down window', async () => {
@@ -193,7 +209,7 @@ describe('SignalService — condition pipeline', () => {
   });
 
   it('step 10: stops with STOCK_DAILY_LIMIT on BUY when the per-stock cap would be exceeded', async () => {
-    mappingService.findByTicker.mockResolvedValue(buildMapping({ maxDailySpend: '1500.00' }));
+    mappingService.findByTicker.mockResolvedValue(buildMapping({ maxDailySpend: 1500 }));
     tradeService.sumInvestmentSuccessToday.mockResolvedValue(1000);
 
     const result = await service.processSignal(buildInput({ direction: Direction.BUY }));
@@ -202,8 +218,11 @@ describe('SignalService — condition pipeline', () => {
   });
 
   it('step 11: stops with MAX_POSITIONS_STOCK on BUY when the per-stock position cap is reached', async () => {
-    mappingService.findByTicker.mockResolvedValue(buildMapping({ maxOpenPositions: 1 }));
-    igClientService.getOpenPositionCount.mockResolvedValue(1);
+    const mapping = buildMapping({ maxOpenPositions: 1 });
+    mappingService.findByTicker.mockResolvedValue(mapping);
+    igClientService.getOpenPositions.mockResolvedValue([
+      { dealId: 'D1', epic: mapping.igEpic, direction: Direction.BUY, size: 1 },
+    ]);
 
     const result = await service.processSignal(buildInput({ direction: Direction.BUY }));
 
@@ -262,5 +281,49 @@ describe('SignalService — condition pipeline', () => {
 
     expect(result.status).toBe(TradeStatus.SUCCESS);
     expect(tradeService.executeTrade).toHaveBeenCalled();
+  });
+
+  describe('duplicate signal detection', () => {
+    it('skips with DUPLICATE_SIGNAL when the identical ticker/direction/price repeats within the window', async () => {
+      const first = buildInput({ signalReceivedAt: new Date('2026-06-24T15:00:00.000Z') });
+      const resend = buildInput({ signalReceivedAt: new Date('2026-06-24T15:00:05.000Z') }); // +5s
+
+      await service.processSignal(first);
+      const result = await service.processSignal(resend);
+
+      expect(result.status).toBe(TradeStatus.DUPLICATE_SIGNAL);
+      expect(tradeService.executeTrade).toHaveBeenCalledTimes(1);
+    });
+
+    it('processes normally once the window has elapsed', async () => {
+      const first = buildInput({ signalReceivedAt: new Date('2026-06-24T15:00:00.000Z') });
+      const later = buildInput({ signalReceivedAt: new Date('2026-06-24T15:00:25.000Z') }); // +25s
+
+      await service.processSignal(first);
+      const result = await service.processSignal(later);
+
+      expect(result.status).toBe(TradeStatus.SUCCESS);
+      expect(tradeService.executeTrade).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not treat a different ticker as a duplicate', async () => {
+      const aapl = buildInput({
+        tvTicker: 'AAPL',
+        signalReceivedAt: new Date('2026-06-24T15:00:00.000Z'),
+      });
+      const msft = buildInput({
+        tvTicker: 'MSFT',
+        signalReceivedAt: new Date('2026-06-24T15:00:01.000Z'),
+      });
+      mappingService.findByTicker.mockImplementation((ticker) =>
+        Promise.resolve(buildMapping({ tvTicker: ticker })),
+      );
+
+      await service.processSignal(aapl);
+      const result = await service.processSignal(msft);
+
+      expect(result.status).toBe(TradeStatus.SUCCESS);
+      expect(tradeService.executeTrade).toHaveBeenCalledTimes(2);
+    });
   });
 });

@@ -24,10 +24,12 @@ export class UpdateTradingRulesDto {
   @IsBoolean()
   allowSell?: boolean;
 
+  // Optional AND nullable — the frontend sends `null` explicitly to clear
+  // the limit back to "no limit" (Conditions.tsx), not just omit the field.
   @IsOptional()
   @IsNumber()
   @IsPositive()
-  dailyMaxTotalInvestment?: number;
+  dailyMaxTotalInvestment?: number | null;
 
   @IsOptional()
   @IsInt()
