@@ -21,7 +21,6 @@ async function bootstrap(): Promise<void> {
     bodyParser: true,
   });
 
-  app.setGlobalPrefix('api');
   const configService = app.get(ConfigService);
   const logger = new Logger('Bootstrap');
 
@@ -31,6 +30,7 @@ async function bootstrap(): Promise<void> {
   app.use(cookieParser());
   app.use(json({ limit: '10kb' }));
 
+  app.setGlobalPrefix('api');
   app.enableCors({
     origin: configService.get<string>('FRONTEND_ORIGIN'),
     credentials: true,

@@ -1,11 +1,10 @@
 import { randomBytes } from 'crypto';
 import * as bcrypt from 'bcrypt';
-import { AppDataSource } from '../data-source';
+import { ensureDbCredentials } from '../load-db-credentials';
 import { User } from '../../user/entities/user.entity';
 import { TradingRules } from '../../trading-rules/entities/trading-rules.entity';
 import { Market } from '../../markets/entities/market.entity';
 import { UserRole } from '../../common/enums';
-
 const BCRYPT_COST = 12;
 const SINGLETON_ID = 1;
 
@@ -14,8 +13,10 @@ function generateTempPassword(): string {
 }
 
 async function seed(): Promise<void> {
-  await AppDataSource.initialize();
+  await ensureDbCredentials();
+  const { AppDataSource } = await import('../data-source');
 
+  await AppDataSource.initialize();
   const userRepository = AppDataSource.getRepository(User);
   const tradingRulesRepository = AppDataSource.getRepository(TradingRules);
   const marketRepository = AppDataSource.getRepository(Market);
