@@ -4,19 +4,26 @@ import { NestFactory } from '@nestjs/core';
 import cookieParser from 'cookie-parser';
 import { json } from 'express';
 import helmet from 'helmet';
+
+import { loadSecrets } from './config/secrets-manager';
 import { AppModule } from './app.module';
 import { GlobalExceptionFilter } from './common/filters/http-exception.filter';
 import { ConfiguredSocketIoAdapter } from './realtime/configured-socket-io.adapter';
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule, { bodyParser: true });
+  if (process.env.SECRETS_SOURCE === 'aws') {
+    const secrets = await loadSecrets(process.env.SECRET_NAME_APP!);
+
+    Object.assign(process.env, secrets);
+  }
+
+  const app = await NestFactory.create(AppModule, {
+    bodyParser: true,
+  });
+
   const configService = app.get(ConfigService);
   const logger = new Logger('Bootstrap');
 
-  // PM2 sends SIGTERM on every `pm2 restart` (i.e. every deploy). Without
-  // this, Nest's lifecycle hooks (OnApplicationShutdown — see
-  // InFlightSignalTracker) never run and the process dies immediately,
-  // mid-trade if one happens to be in flight.
   app.enableShutdownHooks();
 
   app.use(helmet());
@@ -41,7 +48,9 @@ async function bootstrap(): Promise<void> {
   app.useGlobalFilters(new GlobalExceptionFilter());
 
   const port = configService.get<number>('PORT', 3000);
+
   await app.listen(port);
+
   logger.log(`Trading bot backend listening on port ${port}`);
 }
 
