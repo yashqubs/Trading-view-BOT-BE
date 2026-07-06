@@ -229,6 +229,7 @@ When a TradingView indicator fires a green (buy) or red (sell) signal, the bot a
 | CSRF double-submit token (`CsrfGuard`) | `X-CSRF-Token` header must match the `csrf_token` cookie on every mutating request | Defense in depth alongside SameSite=Strict |
 | Brute force lockout | 5 attempts / 15 min then locked | Stops password guessing |
 | Token blacklist | Access token invalidated on logout; refresh token revoked on logout too | Stolen token cannot be reused |
+| **Single active session (IMPLEMENTED)** | **One login per account at a time** — a fresh login on any device immediately invalidates every other device's session | A leaked/stolen session can't quietly persist alongside the real user's |
 
 #### 2FA Implementation (Implemented)
 
@@ -238,6 +239,14 @@ When a TradingView indicator fires a green (buy) or red (sell) signal, the bot a
 - Disabling 2FA requires re-entering the account password
 - Codes are sent via AWS SES, authorized through the EC2 instance's IAM role — no SES credentials are stored anywhere
 - Only a salted hash of the current OTP is stored, with a short expiry; there is no long-lived secret to protect (unlike the TOTP approach this replaced), so nothing OTP-related needs encryption at rest
+
+#### Single-Session Enforcement (Implemented)
+
+- Every completed full login (`AuthService.login` with no 2FA, or `AuthService.loginWith2fa`, or the forced-password-change upgrade in `UserController.changeOwnPassword`) calls `SessionService.establishFullSession`, which stamps a brand-new random `currentSessionId` onto that user's row and deletes every other outstanding refresh token for that user.
+- That session id travels inside the JWT (`JwtPayload.sessionId`). `JwtStrategy.validate` compares it against the database on **every** request — a mismatch means another device logged in more recently, and the request is rejected with 401 even though the token hasn't expired.
+- The kicked-out device's refresh token is gone too, so it can't silently renew its way back in via `POST /auth/refresh` either.
+- Not enforced for the "pending" session (forced password change / mid-2FA-challenge) — that's not a completed login yet, so it doesn't invalidate an already-logged-in session elsewhere.
+- No new endpoint was added for this — it's enforced transparently inside the existing login/refresh/JWT-validation path. See `src/auth/session/session.service.ts`, `src/auth/strategies/jwt.strategy.ts`, and migration `1700001300000-AddUserCurrentSessionId`.
 
 ### Layer 5 — Secrets Management (Implemented)
 
@@ -410,6 +419,7 @@ The portal UI shows this as three inline steps on the login page: enter email �
 | failed_login_attempts | INTEGER | Brute force counter |
 | locked_until | TIMESTAMP, Nullable | Set when locked |
 | last_login_at | TIMESTAMP, Nullable | For audit |
+| current_session_id | VARCHAR(36), Nullable | Set fresh on every full login; `JwtStrategy` rejects any other session's token the moment this changes — enforces single-active-session (Section 5 Layer 4) |
 | created_at | TIMESTAMP | Auto |
 | updated_at | TIMESTAMP | Auto |
 
@@ -635,12 +645,15 @@ Internal service. Methods: login, refreshSession, searchMarkets, getOpenPosition
 |---|---|---|
 | Login | /login | Email + password + 2FA |
 | Dashboard | / | Global stats + charts |
-| Stocks | /stocks | Per-stock config table |
-| Stock Detail | /stocks/:ticker | Single-stock statistics + charts + per-stock trading conditions |
-| Trades | /trades | Full trade history with filters |
-| Conditions | /conditions | Global trading rules |
+| Stocks | /stocks | Per-stock config table (Admin only) |
+| Stock Detail | /stocks/:ticker | Single-stock statistics + charts + per-stock trading conditions (Viewer: read-only) |
+| Markets | /markets | Search/manage the IG tradeable-market list (Admin only) |
+| Open Positions | /positions | Currently open positions, live from IG |
+| Trades | /trades | Full trade history with filters + CSV export |
+| Conditions | /conditions | Global trading rules (Viewer: read-only) |
 | Users | /users | User management (Admin only) |
 | Settings | /settings | Webhook URL, IG status, last TradingView signal received, password, 2FA |
+| Roles & Access | /access | Static reference page — every feature plus what Admin vs. Viewer can do with it. Informational only, no API calls; visible to both roles |
 
 ### Stack
 
