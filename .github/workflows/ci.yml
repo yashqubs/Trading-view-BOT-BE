@@ -2,21 +2,29 @@ name: Backend CI/CD
 
 on:
   push:
-    branches: [main, develop]
+    branches:
+      - main
+      - develop
   pull_request:
-    branches: [main, develop]
+    branches:
+      - main
+      - develop
 
 jobs:
   build-test-audit:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
         with:
           version: 10
 
-      - uses: actions/setup-node@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: pnpm
@@ -30,25 +38,19 @@ jobs:
       - name: Build
         run: pnpm build
 
-      - name: Test
+      - name: Run tests
         run: pnpm test
 
-      - name: Dependency audit (fail on high/critical)
+      - name: Dependency audit
         run: pnpm audit --audit-level=high
 
-  # Deploys only real pushes to main (never PRs, never `develop`), and only
-  # after build-test-audit passes — a red CI run never reaches production.
-  # Requires repo secrets EC2_HOST, EC2_SSH_USER, EC2_SSH_KEY (private key
-  # matching a public key already in that user's ~/.ssh/authorized_keys on
-  # the server) and repo variable DEPLOY_PATH (where this repo is cloned on
-  # the EC2 instance, e.g. /opt/trading-view-bot-backend). Single fork PM2
-  # instance per CLAUDE.md — never scale this to multiple instances/servers
-  # without redesigning IG session + in-memory duplicate-signal state.
   deploy:
+    name: Deploy to Production
     needs: build-test-audit
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: production
+
     steps:
       - name: Deploy over SSH
         uses: appleboy/ssh-action@v1
@@ -56,22 +58,43 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_SSH_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
+          script_stop: true
           script: |
             set -euo pipefail
+
             cd "${{ vars.DEPLOY_PATH }}"
+
+            echo "Fetching latest code..."
             git fetch origin main
             git reset --hard origin/main
+
+            echo "Installing dependencies..."
             pnpm install --frozen-lockfile
+
+            echo "Running database migrations..."
             pnpm migration:run
+
+            echo "Building application..."
             pnpm build
-            pm2 restart trading_view_bot --update-env
+
+            echo "Restarting application..."
+            pm2 restart trading_view_bot
+
             pm2 save
-            # Confirm the restarted process is actually serving requests
-            # (not just that `pm2 restart` didn't throw) before calling
-            # this deploy successful.
-            for i in 1 2 3 4 5; do
-              curl -sf http://127.0.0.1:${PORT:-3000}/health && exit 0
+
+            echo "Waiting for application to start..."
+            sleep 10
+
+            echo "Running health check..."
+
+            for i in {1..5}; do
+              if curl -fsS http://127.0.0.1:3000/health > /dev/null; then
+                echo "Deployment successful."
+                exit 0
+              fi
+
               sleep 3
             done
-            echo "Health check failed after restart" >&2
+
+            echo "Health check failed."
             exit 1
