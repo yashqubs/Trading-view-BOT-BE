@@ -21,6 +21,7 @@ async function bootstrap(): Promise<void> {
     bodyParser: true,
   });
 
+  app.setGlobalPrefix('api');
   const configService = app.get(ConfigService);
   const logger = new Logger('Bootstrap');
 
