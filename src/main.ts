@@ -1,4 +1,4 @@
-import { Logger, ValidationPipe } from '@nestjs/common';
+import { Logger, RequestMethod, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import cookieParser from 'cookie-parser';
@@ -30,7 +30,9 @@ async function bootstrap(): Promise<void> {
   app.use(cookieParser());
   app.use(json({ limit: '10kb' }));
 
-  app.setGlobalPrefix('api');
+  app.setGlobalPrefix('api', {
+    exclude: [{ path: 'health', method: RequestMethod.GET }],
+  });
   app.enableCors({
     origin: configService.get<string>('FRONTEND_ORIGIN'),
     credentials: true,
