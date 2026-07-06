@@ -75,7 +75,7 @@ jobs:
             echo "Running database migrations..."
             DB_PASSWORD="$(aws secretsmanager get-secret-value \
               --region eu-west-2 \
-              --secret-id prod/trading-bot/app \
+              --secret-id prod-quantum-trade \
               --query 'SecretString' --output text \
               | python3 -c 'import sys,json; print(json.load(sys.stdin)["DB_PASSWORD"])')"
             export DB_PASSWORD
