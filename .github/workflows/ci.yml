@@ -73,6 +73,8 @@ jobs:
             pnpm install --frozen-lockfile
 
             echo "Running database migrations..."
+            export AWS_REGION=eu-west-2
+            export SECRET_NAME_APP=prod-quantum-trade
             pnpm migration:run
 
             echo "Building application..."
