@@ -21,11 +21,17 @@ import { SecretsService } from '../secrets/secrets.service';
         await secretsService.ensureLoaded();
         return {
           type: 'postgres' as const,
-          host: configService.get<string>('DB_HOST', '127.0.0.1'),
-          port: configService.get<number>('DB_PORT', 5432),
-          username: configService.get<string>('DB_USERNAME', 'trading_view_bot'),
+          host: secretsService.getOptionalString('DB_HOST') ?? configService.get<string>('DB_HOST', '127.0.0.1'),
+          port: Number(
+            secretsService.getOptionalString('DB_PORT') ?? configService.get<number>('DB_PORT', 5432),
+          ),
+          username:
+            secretsService.getOptionalString('DB_USERNAME') ??
+            configService.get<string>('DB_USERNAME', 'trading_view_bot'),
           password: secretsService.get('DB_PASSWORD'),
-          database: configService.get<string>('DB_NAME', 'trading_view_bot'),
+          database:
+            secretsService.getOptionalString('DB_NAME') ??
+            configService.get<string>('DB_NAME', 'trading_view_bot'),
           entities: [
             User,
             TokenBlacklist,

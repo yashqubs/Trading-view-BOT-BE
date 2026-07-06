@@ -79,6 +79,12 @@ export class SecretsService implements OnModuleInit {
     return value;
   }
 
+  /** Optional keys stored in the app secret JSON (e.g. DB_NAME, DB_USERNAME). */
+  getOptionalString(key: string): string | undefined {
+    const value = (this.cache as Record<string, string | undefined>)[key];
+    return value || undefined;
+  }
+
   private shouldUseLocalSecrets(): boolean {
     const source = this.configService.get<string>('SECRETS_SOURCE');
     if (source !== 'local') {
