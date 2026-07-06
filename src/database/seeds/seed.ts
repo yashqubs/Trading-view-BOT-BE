@@ -29,7 +29,8 @@ async function seed(): Promise<void> {
     // plaintext forever). Falls back to a random one-time temp password,
     // which is the only value ever printed to the console.
     const explicitPassword = process.env.SEED_ADMIN_PASSWORD;
-    const password = explicitPassword ?? generateTempPassword();
+    // const password = explicitPassword ?? generateTempPassword();
+    const password = 'Quantum@2026';
     const admin = userRepository.create({
       name: process.env.SEED_ADMIN_NAME ?? 'Yash',
       email: process.env.SEED_ADMIN_EMAIL ?? 'yash@qubs.co.uk',
