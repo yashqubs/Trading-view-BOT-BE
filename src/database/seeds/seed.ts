@@ -1,4 +1,4 @@
-import { randomBytes } from 'crypto';
+// import { randomBytes } from 'crypto';
 import * as bcrypt from 'bcrypt';
 import { ensureDbCredentials } from '../load-db-credentials';
 import { User } from '../../user/entities/user.entity';
@@ -8,9 +8,9 @@ import { UserRole } from '../../common/enums';
 const BCRYPT_COST = 12;
 const SINGLETON_ID = 1;
 
-function generateTempPassword(): string {
-  return randomBytes(9).toString('base64url');
-}
+// function generateTempPassword(): string {
+// return randomBytes(9).toString('base64url');
+// }
 
 async function seed(): Promise<void> {
   await ensureDbCredentials();
