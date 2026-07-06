@@ -10,12 +10,16 @@ async function runMigrations(): Promise<void> {
       throw new Error('DB_PASSWORD is not set and SECRET_NAME_APP is missing from .env');
     }
 
-    const secrets = await loadSecrets(secretName);
+    const secrets = await loadSecrets(secretName) as Record<string, unknown>;
     if (typeof secrets.DB_PASSWORD !== 'string' || !secrets.DB_PASSWORD) {
       throw new Error(`DB_PASSWORD not found in secret ${secretName}`);
     }
 
     process.env.DB_PASSWORD = secrets.DB_PASSWORD;
+
+    if (!process.env.DB_USERNAME && typeof secrets.DB_USERNAME === 'string' && secrets.DB_USERNAME) {
+      process.env.DB_USERNAME = secrets.DB_USERNAME;
+    }
   }
 
   const { AppDataSource } = await import('./data-source');
