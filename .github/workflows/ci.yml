@@ -60,9 +60,10 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
           script_stop: true
           script: |
+            sudo bash <<'EOF'
             set -euo pipefail
 
-            cd "${{ vars.DEPLOY_PATH }}"
+            cd /var/www/quantum-trade/backend
 
             echo "Fetching latest code..."
             git fetch origin main
@@ -98,3 +99,4 @@ jobs:
 
             echo "Health check failed."
             exit 1
+            EOF
