@@ -63,7 +63,7 @@ jobs:
             sudo bash <<'EOF'
             set -euo pipefail
 
-            cd /var/www/quantum-trade/backend
+            cd /var/www/quantum-trade/Trading-view-BOT-BE
 
             echo "Fetching latest code..."
             git fetch origin main
@@ -73,20 +73,13 @@ jobs:
             pnpm install --frozen-lockfile
 
             echo "Running database migrations..."
-            DB_PASSWORD="$(aws secretsmanager get-secret-value \
-              --region eu-west-2 \
-              --secret-id prod-quantum-trade \
-              --query 'SecretString' --output text \
-              | python3 -c 'import sys,json; print(json.load(sys.stdin)["DB_PASSWORD"])')"
-            export DB_PASSWORD
             pnpm migration:run
-            unset DB_PASSWORD
 
             echo "Building application..."
             pnpm build
 
             echo "Restarting application..."
-            pm2 restart trading_view_bot
+            pm2 restart trading_view_bot || pm2 start ecosystem.config.js
 
             pm2 save
 

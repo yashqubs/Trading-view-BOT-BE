@@ -22,7 +22,7 @@
     "audit:check": "pnpm audit --audit-level=high",
     "typeorm": "typeorm-ts-node-commonjs",
     "migration:generate": "pnpm typeorm migration:generate -d src/database/data-source.ts",
-    "migration:run": "pnpm typeorm migration:run -d src/database/data-source.ts",
+    "migration:run": "ts-node -r tsconfig-paths/register src/database/run-migrations.ts",
     "migration:revert": "pnpm typeorm migration:revert -d src/database/data-source.ts",
     "seed": "ts-node -r tsconfig-paths/register src/database/seeds/seed.ts",
     "clear-db": "ts-node -r tsconfig-paths/register src/database/clear-db.ts",

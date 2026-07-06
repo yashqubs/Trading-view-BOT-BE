@@ -10,9 +10,9 @@ import { loadEnvFile } from './load-env';
 
 loadEnvFile();
 
-// CLI-only data source for running migrations. DB_PASSWORD is injected as a
-// process env var by the deploy script (sourced from Secrets Manager) for the
-// single CLI invocation — it is never written to the committed .env file.
+// CLI-only data source for running migrations. DB_PASSWORD comes from .env in
+// local dev, or is fetched from AWS Secrets Manager by run-migrations.ts in
+// production before this module is imported.
 export const AppDataSource = new DataSource({
   type: 'postgres',
   host: process.env.DB_HOST ?? '127.0.0.1',
