@@ -32,6 +32,7 @@ describe('UserService', () => {
       failedLoginAttempts: 0,
       lockedUntil: null,
       lastLoginAt: null,
+      currentSessionId: null,
       createdAt: new Date(),
       updatedAt: new Date(),
       ...overrides,

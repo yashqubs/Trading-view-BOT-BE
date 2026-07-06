@@ -1,10 +1,18 @@
 import { AppDataSource } from './data-source';
 
-// Every table this app owns. Order doesn't matter for TRUNCATE (no FK
-// constraints exist between them — see InitSchema migration), but this list
-// itself matters: a new entity/migration needs a matching line here or it
-// silently survives a "clear".
-const TABLES = ['trade_log', 'stock_mapping', 'trading_rules', 'token_blacklist', 'users'];
+// Every table this app owns. Order doesn't matter for TRUNCATE — CASCADE
+// handles the real FKs (refresh_tokens -> users, stock_mapping -> markets) —
+// but this list itself matters: a new entity/migration needs a matching line
+// here or it silently survives a "clear".
+const TABLES = [
+  'trade_log',
+  'stock_mapping',
+  'markets',
+  'trading_rules',
+  'token_blacklist',
+  'refresh_tokens',
+  'users',
+];
 
 /**
  * Dev/test utility — wipes every row from every table (schema stays intact,

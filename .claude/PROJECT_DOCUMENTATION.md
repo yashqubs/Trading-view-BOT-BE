@@ -223,11 +223,12 @@ When a TradingView indicator fires a green (buy) or red (sell) signal, the bot a
 |---|---|---|
 | Password hashing | bcrypt cost 12 | Plain text never stored |
 | **2FA (email OTP)** | **Optional, user opt-in (IMPLEMENTED)** | **Stolen password alone is not enough, for accounts that enable it** |
-| JWT expiry | 1 hour access token (15 min while a password change is pending) | Limits exposure window |
-| Token storage | HttpOnly + Secure + SameSite=Strict cookie | Prevents XSS theft + CSRF |
+| JWT expiry | 15 min access token (also 15 min for the pending session while a password change is required) | Limits exposure window per token |
+| Refresh token | Opaque, hashed in DB (`refresh_tokens`), 1h sliding idle window — `POST /auth/refresh` rotates it (single-use) and reissues both cookies. Not issued for pending sessions. | Keeps an *active* user logged in without a long-lived access token; a genuinely idle user (no requests for 1h) is logged out |
+| Token storage | HttpOnly + Secure + SameSite=Strict cookie (both access and refresh) | Prevents XSS theft + CSRF |
 | CSRF double-submit token (`CsrfGuard`) | `X-CSRF-Token` header must match the `csrf_token` cookie on every mutating request | Defense in depth alongside SameSite=Strict |
 | Brute force lockout | 5 attempts / 15 min then locked | Stops password guessing |
-| Token blacklist | Invalidated on logout | Stolen token cannot be reused |
+| Token blacklist | Access token invalidated on logout; refresh token revoked on logout too | Stolen token cannot be reused |
 
 #### 2FA Implementation (Implemented)
 

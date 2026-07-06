@@ -14,6 +14,7 @@ import { SortOrder, TRADE_LOG_SORT_COLUMN, TradeLogSortBy } from './dto/trade-lo
 import { TradeLog } from './entities/trade-log.entity';
 import { SignalInput } from './interfaces/signal-input.interface';
 import { TradeLogSummary } from './interfaces/trade-log-summary.interface';
+import { calculateLimitLevel } from './utils/calculate-limit-level.util';
 import { calculateQuantity } from './utils/calculate-quantity.util';
 
 export interface PaginatedTradeLogs {
@@ -58,11 +59,14 @@ export class TradeService {
    * already run every condition check — for SELL, `existingPosition` is the
    * open position to close (matched during the SELL position check).
    *
-   * `rules` supplies the global default execution mode; `mapping.executionMode`
-   * overrides it for this specific stock when set. SIGNAL_PRICE places a
-   * LIMIT order at the exact signal price — IG either fills it immediately
-   * or rejects it, same as a market order would; there is no working-order
-   * follow-up, so a rejected LIMIT order just logs FAILED like anything else.
+   * `rules` supplies the global default execution mode + slippage tolerance;
+   * `mapping.executionMode`/`mapping.maxSlippagePercent` override them
+   * independently for this specific stock when set. SIGNAL_PRICE places a
+   * LIMIT order at the signal price adjusted by the tolerance (see
+   * calculateLimitLevel — 0% tolerance means the exact signal price) — IG
+   * either fills it at that level or better, or rejects it, same as a market
+   * order would; there is no working-order follow-up, so a rejected LIMIT
+   * order just logs FAILED like anything else.
    */
   async executeTrade(
     input: SignalInput,
@@ -72,9 +76,13 @@ export class TradeService {
   ): Promise<TradeLog> {
     const quantity = calculateQuantity(Number(mapping.investmentAmount), input.signalPrice);
     const executionMode = mapping.executionMode ?? rules.executionMode;
+    const maxSlippagePercent = Number(mapping.maxSlippagePercent ?? rules.maxSlippagePercent);
     const igOrderParams =
       executionMode === ExecutionMode.SIGNAL_PRICE
-        ? { orderType: 'LIMIT' as const, level: input.signalPrice }
+        ? {
+            orderType: 'LIMIT' as const,
+            level: calculateLimitLevel(input.signalPrice, input.direction, maxSlippagePercent),
+          }
         : { orderType: 'MARKET' as const };
 
     const baseLog = {
@@ -276,6 +284,7 @@ export class TradeService {
   // actually hit our webhook", independent of whether that signal traded.
   async getLastSignalReceivedAt(): Promise<Date | null> {
     const latest = await this.tradeLogRepository.findOne({
+      where: {},
       order: { signalReceivedAt: 'DESC' },
       select: ['signalReceivedAt'],
     });

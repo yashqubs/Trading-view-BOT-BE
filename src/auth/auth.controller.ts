@@ -137,8 +137,27 @@ export class AuthController {
     @Req() request: Request,
     @Res({ passthrough: true }) response: Response,
   ): Promise<{ success: true }> {
-    await this.authService.logout(request.cookies?.access_token, response);
+    await this.authService.logout(
+      request.cookies?.access_token,
+      request.cookies?.refresh_token,
+      response,
+    );
     return { success: true };
+  }
+
+  // Deliberately NOT behind JwtAuthGuard — this exists specifically for the
+  // case where the access token has already expired. Silent renewal while
+  // the user stays active; the refresh cookie is opaque and has its own
+  // sliding idle timeout (see RefreshTokenService).
+  @Post('refresh')
+  @Throttle(LOGIN_THROTTLE)
+  @HttpCode(HttpStatus.OK)
+  async refresh(
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<{ user: User }> {
+    const user = await this.authService.refresh(request.cookies?.refresh_token, response);
+    return { user };
   }
 
   @Get('me')

@@ -67,6 +67,15 @@ export class User {
   @Column({ type: 'timestamptz', nullable: true, name: 'last_login_at' })
   lastLoginAt: Date | null;
 
+  // Set to a fresh random value on every successful full login (see
+  // AuthService.establishFullSession) and stamped into that login's JWT.
+  // JwtStrategy compares the two on every request — a newer login on another
+  // device overwrites this column, which immediately invalidates every other
+  // device's access token, enforcing single-active-session per account.
+  @Exclude()
+  @Column({ type: 'varchar', length: 36, nullable: true, name: 'current_session_id' })
+  currentSessionId: string | null;
+
   @CreateDateColumn({ type: 'timestamptz', name: 'created_at' })
   createdAt: Date;
 

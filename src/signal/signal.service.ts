@@ -95,8 +95,8 @@ export class SignalService {
       return this.tradeService.logSkip(input, TradeStatus.DISABLED, mapping.igEpic);
     }
 
-    // 5. market open
-    if (!isMarketOpen(rules, input.signalReceivedAt)) {
+    // 5. market open (the stock's OWN assigned market, not a global window)
+    if (!isMarketOpen(mapping.market, input.signalReceivedAt)) {
       return this.tradeService.logSkip(input, TradeStatus.MARKET_CLOSED, mapping.igEpic);
     }
 

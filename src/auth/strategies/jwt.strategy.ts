@@ -50,6 +50,15 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       throw new UnauthorizedException('Account is not active');
     }
 
+    // Single-active-session enforcement: a later login on another device
+    // overwrites currentSessionId (see AuthService.establishFullSession),
+    // which immediately invalidates this token even though it hasn't expired
+    // yet. Skipped for pending (forced-password-change) sessions — those
+    // aren't full logins and don't carry a real session id.
+    if (!payload.pending && payload.sessionId !== user.currentSessionId) {
+      throw new UnauthorizedException('Logged in from another device');
+    }
+
     return { id: user.id, email: user.email, role: user.role, pending: payload.pending };
   }
 }

@@ -45,7 +45,7 @@ export class UserController {
     // Upgrades a pending (forced-password-change) session straight to a full
     // one — without this the just-onboarded user stays stuck behind
     // JwtAuthGuard's pending check until the old cookie expires.
-    this.sessionService.issueCookie(updated, response, false);
+    await this.sessionService.establishFullSession(updated, response);
   }
 
   @Post()

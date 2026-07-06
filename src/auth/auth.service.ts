@@ -13,6 +13,7 @@ import { Disable2faDto } from './dto/disable-2fa.dto';
 import { Verify2faDto } from './dto/verify-2fa.dto';
 import { User } from '../user/entities/user.entity';
 import { JwtPayload } from './interfaces/jwt-payload.interface';
+import { RefreshTokenService } from './session/refresh-token.service';
 import { SessionService } from './session/session.service';
 import { TokenBlacklistService } from './token-blacklist.service';
 import { generateOtp, hashOtp, maskEmail } from './utils/otp.util';
@@ -44,7 +45,21 @@ export class AuthService {
     private readonly emailService: EmailService,
     private readonly sessionService: SessionService,
     private readonly tokenBlacklistService: TokenBlacklistService,
+    private readonly refreshTokenService: RefreshTokenService,
   ) {}
+
+  /**
+   * Issues a full session: a short-lived access token plus the refresh token
+   * that lets the frontend renew it silently while the user stays active.
+   * Not used for the pending (forced-password-change) session — see
+   * SessionService.issueRefreshTokenCookie. Delegates to SessionService so
+   * UserController's forced-password-change upgrade path (the other place a
+   * full session gets established) shares the exact same single-session
+   * enforcement instead of duplicating it.
+   */
+  private establishFullSession(user: User, response: Response): Promise<void> {
+    return this.sessionService.establishFullSession(user, response);
+  }
 
   static hashPassword(password: string): Promise<string> {
     return bcrypt.hash(password, BCRYPT_COST);
@@ -60,7 +75,9 @@ export class AuthService {
     const user = await this.validateCredentials(dto.email, dto.password);
 
     if (user.mustChangePassword) {
-      this.sessionService.issueCookie(user, response, true);
+      // Session id is ignored for pending sessions (JwtStrategy skips the
+      // check) — not yet a full login, so it doesn't affect other devices.
+      this.sessionService.issueAccessTokenCookie(user, response, true, '');
       return { requiresPasswordChange: true, requires2fa: false };
     }
 
@@ -75,7 +92,7 @@ export class AuthService {
 
     user.lastLoginAt = new Date();
     await this.userRepository.save(user);
-    this.sessionService.issueCookie(user, response, false);
+    await this.establishFullSession(user, response);
     return { requiresPasswordChange: false, requires2fa: false, user };
   }
 
@@ -89,7 +106,7 @@ export class AuthService {
 
     user.lastLoginAt = new Date();
     await this.userRepository.save(user);
-    this.sessionService.issueCookie(user, response, false);
+    await this.establishFullSession(user, response);
     return user;
   }
 
@@ -183,17 +200,60 @@ export class AuthService {
     await this.userRepository.save(user);
   }
 
-  async logout(token: string | undefined, response: Response): Promise<void> {
-    if (token) {
+  async logout(
+    accessToken: string | undefined,
+    refreshToken: string | undefined,
+    response: Response,
+  ): Promise<void> {
+    if (accessToken) {
       try {
-        const payload = this.jwtService.decode(token) as (JwtPayload & { exp: number }) | null;
+        const payload = this.jwtService.decode(accessToken) as
+          (JwtPayload & { exp: number }) | null;
         const expiresAt = payload?.exp ? new Date(payload.exp * 1000) : new Date();
-        await this.tokenBlacklistService.blacklist(token, expiresAt);
+        await this.tokenBlacklistService.blacklist(accessToken, expiresAt);
       } catch {
         // best-effort — an undecodable token can't be replayed anyway
       }
     }
+    if (refreshToken) {
+      await this.refreshTokenService.revoke(refreshToken);
+    }
     this.sessionService.clearCookie(response);
+  }
+
+  /**
+   * Silently renews an expired-or-expiring access token using the refresh
+   * cookie — see RefreshTokenService.rotate for the single-use/sliding-idle
+   * mechanics. Throws (and clears cookies) if the refresh token is missing,
+   * unknown, or past its idle window — the frontend treats that as "log in
+   * again", same as any other 401.
+   */
+  async refresh(refreshToken: string | undefined, response: Response): Promise<User> {
+    const invalid = new UnauthorizedException('Session expired');
+    if (!refreshToken) {
+      throw invalid;
+    }
+
+    const rotated = await this.refreshTokenService.rotate(refreshToken);
+    if (!rotated) {
+      this.sessionService.clearCookie(response);
+      throw invalid;
+    }
+
+    const user = await this.userRepository.findOne({ where: { id: rotated.userId } });
+    if (!user || !user.active) {
+      this.sessionService.clearCookie(response);
+      throw invalid;
+    }
+
+    // Refresh renews the pair without touching currentSessionId — the session
+    // itself doesn't change, only its tokens do. If it's null here, another
+    // login on a different device already claimed the session (its refresh
+    // token rotation would have already been revoked by revokeAllForUser),
+    // so this token wouldn't have made it past rotate() above anyway.
+    this.sessionService.issueAccessTokenCookie(user, response, false, user.currentSessionId ?? '');
+    this.sessionService.issueRefreshTokenCookie(response, rotated.newToken);
+    return user;
   }
 
   private async issueOtp(user: User, purpose: 'LOGIN' | 'SETUP' | 'RESET'): Promise<OtpSentResult> {

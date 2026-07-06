@@ -42,11 +42,12 @@ describe('TradeService', () => {
     coolDownMinutes: null,
     maxOpenPositions: 1,
     executionMode: null,
+    maxSlippagePercent: null,
     createdAt: new Date(),
     updatedAt: new Date(),
   } as StockMapping;
 
-  const rules = { executionMode: ExecutionMode.MARKET } as TradingRules;
+  const rules = { executionMode: ExecutionMode.MARKET, maxSlippagePercent: 0 } as TradingRules;
 
   beforeEach(async () => {
     tradeLogRepository = {
@@ -141,6 +142,7 @@ describe('TradeService', () => {
 
       await service.executeTrade(input, mapping, null, {
         executionMode: ExecutionMode.SIGNAL_PRICE,
+        maxSlippagePercent: 0,
       } as TradingRules);
 
       expect(igClientService.placeOrder).toHaveBeenCalledWith({
@@ -150,6 +152,49 @@ describe('TradeService', () => {
         orderType: 'LIMIT',
         level: input.signalPrice,
       });
+    });
+
+    it('applies the global slippage tolerance to the LIMIT level on a BUY', async () => {
+      igClientService.placeOrder.mockResolvedValue({ dealReference: 'REF-1d' });
+      igClientService.confirmDeal.mockResolvedValue({
+        dealId: 'DEAL-1d',
+        dealStatus: 'ACCEPTED',
+        status: 'OPEN',
+        reason: null,
+        level: 100,
+      });
+
+      await service.executeTrade(input, mapping, null, {
+        executionMode: ExecutionMode.SIGNAL_PRICE,
+        maxSlippagePercent: 1,
+      } as TradingRules);
+
+      // signalPrice 100, 1% tolerance -> worst acceptable BUY price is 101.
+      expect(igClientService.placeOrder).toHaveBeenCalledWith(
+        expect.objectContaining({ orderType: 'LIMIT', level: 101 }),
+      );
+    });
+
+    it("a stock's own maxSlippagePercent overrides the global default independently of executionMode", async () => {
+      igClientService.placeOrder.mockResolvedValue({ dealReference: 'REF-1e' });
+      igClientService.confirmDeal.mockResolvedValue({
+        dealId: 'DEAL-1e',
+        dealStatus: 'ACCEPTED',
+        status: 'OPEN',
+        reason: null,
+        level: 100,
+      });
+      const stockSlippageOverride = { ...mapping, maxSlippagePercent: 2 } as StockMapping;
+
+      await service.executeTrade(input, stockSlippageOverride, null, {
+        executionMode: ExecutionMode.SIGNAL_PRICE,
+        maxSlippagePercent: 1, // would give 101 if not overridden
+      } as TradingRules);
+
+      // signalPrice 100, 2% tolerance (stock override) -> 102, not 101.
+      expect(igClientService.placeOrder).toHaveBeenCalledWith(
+        expect.objectContaining({ orderType: 'LIMIT', level: 102 }),
+      );
     });
 
     it("a stock's own executionMode overrides the global default", async () => {
@@ -247,6 +292,32 @@ describe('TradeService', () => {
 
       expect(result.status).toBe(TradeStatus.FAILED);
       expect(igClientService.closePosition).not.toHaveBeenCalled();
+    });
+
+    it('applies the slippage tolerance the opposite direction on a SELL (floor, not ceiling)', async () => {
+      igClientService.closePosition.mockResolvedValue({ dealReference: 'REF-4' });
+      igClientService.confirmDeal.mockResolvedValue({
+        dealId: 'DEAL-4',
+        dealStatus: 'ACCEPTED',
+        status: 'CLOSED',
+        reason: null,
+        level: 100,
+      });
+
+      const sellInputSlippage: SignalInput = {
+        ...input,
+        direction: Direction.SELL,
+        signalPrice: 100,
+      };
+      await service.executeTrade(sellInputSlippage, mapping, existingPosition, {
+        executionMode: ExecutionMode.SIGNAL_PRICE,
+        maxSlippagePercent: 1,
+      } as TradingRules);
+
+      // signalPrice 100, 1% tolerance -> worst acceptable SELL price is 99 (a floor, not a ceiling).
+      expect(igClientService.closePosition).toHaveBeenCalledWith(
+        expect.objectContaining({ orderType: 'LIMIT', level: 99 }),
+      );
     });
   });
 });

@@ -7,6 +7,7 @@ import { UserRole } from '../common/enums';
 import { EmailService } from '../email/email.service';
 import { User } from '../user/entities/user.entity';
 import { AuthService } from './auth.service';
+import { RefreshTokenService } from './session/refresh-token.service';
 import { SessionService } from './session/session.service';
 import { TokenBlacklistService } from './token-blacklist.service';
 
@@ -14,7 +15,13 @@ describe('AuthService', () => {
   let service: AuthService;
   let repository: { findOne: jest.Mock; findOneByOrFail: jest.Mock; save: jest.Mock };
   let emailService: { sendOtpEmail: jest.Mock };
-  let sessionService: { issueCookie: jest.Mock; clearCookie: jest.Mock };
+  let sessionService: {
+    issueAccessTokenCookie: jest.Mock;
+    issueRefreshTokenCookie: jest.Mock;
+    clearCookie: jest.Mock;
+    establishFullSession: jest.Mock;
+  };
+  let refreshTokenService: { issue: jest.Mock; rotate: jest.Mock; revoke: jest.Mock };
   const mockResponse = {} as never;
 
   function buildUser(overrides: Partial<User> = {}): User {
@@ -36,6 +43,7 @@ describe('AuthService', () => {
       failedLoginAttempts: 0,
       lockedUntil: null,
       lastLoginAt: null,
+      currentSessionId: null,
       createdAt: new Date(),
       updatedAt: new Date(),
       ...overrides,
@@ -55,7 +63,17 @@ describe('AuthService', () => {
       save: jest.fn((user) => Promise.resolve(user)),
     };
     emailService = { sendOtpEmail: jest.fn().mockResolvedValue(undefined) };
-    sessionService = { issueCookie: jest.fn(), clearCookie: jest.fn() };
+    sessionService = {
+      issueAccessTokenCookie: jest.fn(),
+      issueRefreshTokenCookie: jest.fn(),
+      clearCookie: jest.fn(),
+      establishFullSession: jest.fn().mockResolvedValue(undefined),
+    };
+    refreshTokenService = {
+      issue: jest.fn().mockResolvedValue('mock-refresh-token'),
+      rotate: jest.fn(),
+      revoke: jest.fn(),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -68,6 +86,7 @@ describe('AuthService', () => {
           provide: TokenBlacklistService,
           useValue: { blacklist: jest.fn(), isBlacklisted: jest.fn() },
         },
+        { provide: RefreshTokenService, useValue: refreshTokenService },
       ],
     }).compile();
 
@@ -81,7 +100,7 @@ describe('AuthService', () => {
       await expect(
         service.login({ email: 'nobody@example.com', password: 'x' }, mockResponse),
       ).rejects.toThrow(UnauthorizedException);
-      expect(sessionService.issueCookie).not.toHaveBeenCalled();
+      expect(sessionService.issueAccessTokenCookie).not.toHaveBeenCalled();
     });
 
     it('rejects with a generic error for a wrong password and increments the failure count', async () => {
@@ -123,7 +142,13 @@ describe('AuthService', () => {
       const result = await service.login({ email: user.email, password: 'pw' }, mockResponse);
 
       expect(result).toEqual({ requiresPasswordChange: true, requires2fa: false });
-      expect(sessionService.issueCookie).toHaveBeenCalledWith(user, mockResponse, true);
+      expect(sessionService.issueAccessTokenCookie).toHaveBeenCalledWith(
+        user,
+        mockResponse,
+        true,
+        '',
+      );
+      expect(refreshTokenService.issue).not.toHaveBeenCalled();
       expect(emailService.sendOtpEmail).not.toHaveBeenCalled();
     });
 
@@ -140,7 +165,7 @@ describe('AuthService', () => {
         expect.any(String),
         'LOGIN',
       );
-      expect(sessionService.issueCookie).not.toHaveBeenCalled();
+      expect(sessionService.issueAccessTokenCookie).not.toHaveBeenCalled();
     });
 
     it('issues a full session immediately when no password change or 2FA is pending', async () => {
@@ -151,7 +176,7 @@ describe('AuthService', () => {
 
       expect(result).toMatchObject({ requiresPasswordChange: false, requires2fa: false });
       expect(result.user?.id).toBe(user.id);
-      expect(sessionService.issueCookie).toHaveBeenCalledWith(user, mockResponse, false);
+      expect(sessionService.establishFullSession).toHaveBeenCalledWith(user, mockResponse);
     });
   });
 
@@ -223,7 +248,7 @@ describe('AuthService', () => {
       );
 
       expect(result.id).toBe(user.id);
-      expect(sessionService.issueCookie).toHaveBeenCalledWith(user, mockResponse, false);
+      expect(sessionService.establishFullSession).toHaveBeenCalledWith(user, mockResponse);
     });
 
     it('rejects an invalid OTP and counts the attempt', async () => {
@@ -411,6 +436,52 @@ describe('AuthService', () => {
 
       await expect(service.disable2fa(user.id, { password: 'wrong' })).rejects.toThrow(
         UnauthorizedException,
+      );
+    });
+  });
+
+  describe('refresh', () => {
+    it('rejects with no refresh cookie at all', async () => {
+      await expect(service.refresh(undefined, mockResponse)).rejects.toThrow(UnauthorizedException);
+      expect(refreshTokenService.rotate).not.toHaveBeenCalled();
+    });
+
+    it('rejects and clears cookies when the refresh token is unknown/expired', async () => {
+      refreshTokenService.rotate.mockResolvedValue(null);
+
+      await expect(service.refresh('stale-token', mockResponse)).rejects.toThrow(
+        UnauthorizedException,
+      );
+      expect(sessionService.clearCookie).toHaveBeenCalledWith(mockResponse);
+    });
+
+    it('rejects if the user behind a valid refresh token no longer exists or is inactive', async () => {
+      refreshTokenService.rotate.mockResolvedValue({ userId: 'ghost', newToken: 'new-token' });
+      repository.findOne.mockResolvedValue(null);
+
+      await expect(service.refresh('valid-token', mockResponse)).rejects.toThrow(
+        UnauthorizedException,
+      );
+      expect(sessionService.clearCookie).toHaveBeenCalledWith(mockResponse);
+    });
+
+    it('issues a fresh access token and rotated refresh token for a valid refresh token', async () => {
+      const user = buildUser();
+      refreshTokenService.rotate.mockResolvedValue({ userId: user.id, newToken: 'rotated-token' });
+      repository.findOne.mockResolvedValue(user);
+
+      const result = await service.refresh('valid-token', mockResponse);
+
+      expect(result.id).toBe(user.id);
+      expect(sessionService.issueAccessTokenCookie).toHaveBeenCalledWith(
+        user,
+        mockResponse,
+        false,
+        '',
+      );
+      expect(sessionService.issueRefreshTokenCookie).toHaveBeenCalledWith(
+        mockResponse,
+        'rotated-token',
       );
     });
   });

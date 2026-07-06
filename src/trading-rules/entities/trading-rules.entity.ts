@@ -1,13 +1,6 @@
-import { Column, Entity, PrimaryColumn, UpdateDateColumn, ValueTransformer } from 'typeorm';
+import { Column, Entity, PrimaryColumn, UpdateDateColumn } from 'typeorm';
 import { ExecutionMode } from '../../common/enums';
 import { decimalTransformer } from '../../common/transformers/decimal.transformer';
-
-// Postgres `time` columns round-trip as "HH:MM:SS" — the API contract (and
-// the input DTO) only deals in "HH:MM", so trim seconds on the way out.
-const timeOfDayTransformer: ValueTransformer = {
-  to: (value: string) => value,
-  from: (value: string | null) => (value ? value.slice(0, 5) : value),
-};
 
 @Entity('trading_rules')
 export class TradingRules {
@@ -49,25 +42,6 @@ export class TradingRules {
   @Column({ type: 'int', default: 0, name: 'consecutive_failure_count' })
   consecutiveFailureCount: number;
 
-  @Column({
-    type: 'time',
-    default: '14:30:00',
-    name: 'trade_start_time_utc',
-    transformer: timeOfDayTransformer,
-  })
-  tradeStartTimeUtc: string;
-
-  @Column({
-    type: 'time',
-    default: '21:00:00',
-    name: 'trade_end_time_utc',
-    transformer: timeOfDayTransformer,
-  })
-  tradeEndTimeUtc: string;
-
-  @Column({ type: 'boolean', default: true, name: 'trade_weekdays_only' })
-  tradeWeekdaysOnly: boolean;
-
   // Global default execution mode. A stock's own execution_mode (nullable,
   // on stock_mapping) overrides this when set; when null, the stock
   // inherits this value.
@@ -78,6 +52,22 @@ export class TradingRules {
     name: 'execution_mode',
   })
   executionMode: ExecutionMode;
+
+  // Only applies to SIGNAL_PRICE mode — the tolerance around the signal
+  // price the LIMIT order's level is allowed to move against the trade
+  // before it's rejected instead of filled. 0 (the default) means "exact
+  // signal price only", identical to behavior before this setting existed.
+  // A stock's own max_slippage_percent (nullable, on stock_mapping)
+  // overrides this when set; when null, the stock inherits this value.
+  @Column({
+    type: 'decimal',
+    precision: 5,
+    scale: 2,
+    default: 0,
+    name: 'max_slippage_percent',
+    transformer: decimalTransformer,
+  })
+  maxSlippagePercent: number;
 
   @UpdateDateColumn({ type: 'timestamptz', name: 'updated_at' })
   updatedAt: Date;

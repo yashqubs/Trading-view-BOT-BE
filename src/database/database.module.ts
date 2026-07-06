@@ -3,6 +3,8 @@ import { ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { User } from '../user/entities/user.entity';
 import { TokenBlacklist } from '../auth/entities/token-blacklist.entity';
+import { RefreshToken } from '../auth/entities/refresh-token.entity';
+import { Market } from '../markets/entities/market.entity';
 import { StockMapping } from '../mapping/entities/stock-mapping.entity';
 import { TradingRules } from '../trading-rules/entities/trading-rules.entity';
 import { TradeLog } from '../trade/entities/trade-log.entity';
@@ -24,7 +26,15 @@ import { SecretsService } from '../secrets/secrets.service';
           username: configService.get<string>('DB_USERNAME', 'trading_view_bot'),
           password: secretsService.get('DB_PASSWORD'),
           database: configService.get<string>('DB_NAME', 'trading_view_bot'),
-          entities: [User, TokenBlacklist, StockMapping, TradingRules, TradeLog],
+          entities: [
+            User,
+            TokenBlacklist,
+            RefreshToken,
+            Market,
+            StockMapping,
+            TradingRules,
+            TradeLog,
+          ],
           synchronize: false,
           migrationsRun: false,
         };

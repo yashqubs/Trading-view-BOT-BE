@@ -5,13 +5,10 @@ import {
   IsNumber,
   IsOptional,
   IsPositive,
-  IsString,
-  Matches,
+  Max,
   Min,
 } from 'class-validator';
 import { ExecutionMode } from '../../common/enums';
-
-const TIME_REGEX = /^([01]\d|2[0-3]):([0-5]\d)(:[0-5]\d)?$/;
 
 export class UpdateTradingRulesDto {
   @IsOptional()
@@ -49,20 +46,13 @@ export class UpdateTradingRulesDto {
   maxConsecutiveFailures?: number;
 
   @IsOptional()
-  @IsString()
-  @Matches(TIME_REGEX)
-  tradeStartTimeUtc?: string;
-
-  @IsOptional()
-  @IsString()
-  @Matches(TIME_REGEX)
-  tradeEndTimeUtc?: string;
-
-  @IsOptional()
-  @IsBoolean()
-  tradeWeekdaysOnly?: boolean;
-
-  @IsOptional()
   @IsEnum(ExecutionMode)
   executionMode?: ExecutionMode;
+
+  // Only takes effect in SIGNAL_PRICE mode. 0 = exact signal price only.
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(100)
+  maxSlippagePercent?: number;
 }

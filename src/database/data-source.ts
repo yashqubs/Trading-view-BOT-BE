@@ -1,6 +1,8 @@
 import { DataSource } from 'typeorm';
 import { User } from '../user/entities/user.entity';
 import { TokenBlacklist } from '../auth/entities/token-blacklist.entity';
+import { RefreshToken } from '../auth/entities/refresh-token.entity';
+import { Market } from '../markets/entities/market.entity';
 import { StockMapping } from '../mapping/entities/stock-mapping.entity';
 import { TradingRules } from '../trading-rules/entities/trading-rules.entity';
 import { TradeLog } from '../trade/entities/trade-log.entity';
@@ -18,7 +20,7 @@ export const AppDataSource = new DataSource({
   username: process.env.DB_USERNAME ?? 'trading_view_bot',
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME ?? 'trading_view_bot',
-  entities: [User, TokenBlacklist, StockMapping, TradingRules, TradeLog],
+  entities: [User, TokenBlacklist, RefreshToken, Market, StockMapping, TradingRules, TradeLog],
   migrations: ['src/database/migrations/*.ts'],
   synchronize: false,
 });

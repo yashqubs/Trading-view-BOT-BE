@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { Direction, ExecutionMode, TradeStatus } from '../common/enums';
 import { IgClientService } from '../ig-client/ig-client.service';
+import { Market } from '../markets/entities/market.entity';
 import { StockMapping } from '../mapping/entities/stock-mapping.entity';
 import { MappingService } from '../mapping/mapping.service';
 import { SignalInput } from '../trade/interfaces/signal-input.interface';
@@ -24,12 +25,24 @@ function buildRules(overrides: Partial<TradingRules> = {}): TradingRules {
     maxOpenPositionsGlobal: null,
     maxConsecutiveFailures: 3,
     consecutiveFailureCount: 0,
-    tradeStartTimeUtc: '14:30:00',
-    tradeEndTimeUtc: '21:00:00',
-    tradeWeekdaysOnly: true,
     executionMode: ExecutionMode.MARKET,
+    maxSlippagePercent: 0,
     updatedAt: new Date(),
     updatedBy: null,
+    ...overrides,
+  };
+}
+
+function buildMarket(overrides: Partial<Market> = {}): Market {
+  return {
+    id: 1,
+    name: 'Test Market',
+    timezone: 'UTC',
+    openTime: '14:30',
+    closeTime: '21:00',
+    weekdaysOnly: true,
+    createdAt: new Date(),
+    updatedAt: new Date(),
     ...overrides,
   };
 }
@@ -42,11 +55,14 @@ function buildMapping(overrides: Partial<StockMapping> = {}): StockMapping {
     instrumentName: 'Apple Inc',
     instrumentType: 'SHARES',
     enabled: true,
+    marketId: 1,
+    market: buildMarket(),
     investmentAmount: 1000,
     maxDailySpend: null,
     coolDownMinutes: null,
     maxOpenPositions: 1,
     executionMode: null,
+    maxSlippagePercent: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
@@ -156,6 +172,31 @@ describe('SignalService — condition pipeline', () => {
     );
 
     expect(result.status).toBe(TradeStatus.MARKET_CLOSED);
+  });
+
+  it('step 5: evaluates each stock against its OWN assigned market, not a shared global window', async () => {
+    // Same instant (IN_MARKET_HOURS = 2026-06-24T15:00:00Z): open for a stock
+    // on the default UTC 14:30-21:00 market, closed for one on a market whose
+    // hours don't cover that instant at all.
+    const openMapping = buildMapping({ tvTicker: 'AAPL' });
+    const closedMapping = buildMapping({
+      tvTicker: 'MSFT',
+      market: buildMarket({ id: 2, name: 'Off-hours', openTime: '01:00', closeTime: '02:00' }),
+    });
+    mappingService.findByTicker.mockImplementation((ticker) =>
+      Promise.resolve(ticker === 'AAPL' ? openMapping : closedMapping),
+    );
+
+    const openResult = await service.processSignal(buildInput({ tvTicker: 'AAPL' }));
+    const closedResult = await service.processSignal(
+      buildInput({
+        tvTicker: 'MSFT',
+        signalReceivedAt: new Date(IN_MARKET_HOURS.getTime() + 60_000),
+      }),
+    );
+
+    expect(openResult.status).toBe(TradeStatus.SUCCESS);
+    expect(closedResult.status).toBe(TradeStatus.MARKET_CLOSED);
   });
 
   it('step 6: stops with DAILY_TRADE_LIMIT on BUY when daily trade count is reached', async () => {

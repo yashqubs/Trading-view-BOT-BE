@@ -3,6 +3,7 @@ import * as bcrypt from 'bcrypt';
 import { AppDataSource } from '../data-source';
 import { User } from '../../user/entities/user.entity';
 import { TradingRules } from '../../trading-rules/entities/trading-rules.entity';
+import { Market } from '../../markets/entities/market.entity';
 import { UserRole } from '../../common/enums';
 
 const BCRYPT_COST = 12;
@@ -17,6 +18,7 @@ async function seed(): Promise<void> {
 
   const userRepository = AppDataSource.getRepository(User);
   const tradingRulesRepository = AppDataSource.getRepository(TradingRules);
+  const marketRepository = AppDataSource.getRepository(Market);
 
   const existingAdminCount = await userRepository.count({ where: { role: UserRole.ADMIN } });
   if (existingAdminCount === 0) {
@@ -64,6 +66,47 @@ async function seed(): Promise<void> {
     console.log('Default trading_rules row created.');
   } else {
     console.log('trading_rules row already exists — skipping.');
+  }
+
+  // Checked per-name, not "table is empty" — the AddMarketToStockMapping
+  // migration always creates a "Default (Legacy)" market ahead of this
+  // running (even on a fresh install with zero stocks), so the table is
+  // never actually empty by the time seed.ts runs.
+  const presetMarkets = [
+    {
+      name: 'UK',
+      timezone: 'Europe/London',
+      openTime: '08:00',
+      closeTime: '16:30',
+      weekdaysOnly: true,
+    },
+    {
+      name: 'US',
+      timezone: 'America/New_York',
+      openTime: '09:30',
+      closeTime: '16:00',
+      weekdaysOnly: true,
+    },
+    {
+      name: 'India',
+      timezone: 'Asia/Kolkata',
+      openTime: '09:15',
+      closeTime: '15:30',
+      weekdaysOnly: true,
+    },
+  ];
+  const missingMarkets = [];
+  for (const preset of presetMarkets) {
+    const existing = await marketRepository.findOne({ where: { name: preset.name } });
+    if (!existing) {
+      missingMarkets.push(marketRepository.create(preset));
+    }
+  }
+  if (missingMarkets.length > 0) {
+    await marketRepository.save(missingMarkets);
+    console.log(`Seeded markets: ${missingMarkets.map((m) => m.name).join(', ')}.`);
+  } else {
+    console.log('UK/US/India markets already exist — skipping.');
   }
 
   await AppDataSource.destroy();

@@ -2,6 +2,7 @@ import { exec } from 'child_process';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
+import { RefreshTokenService } from '../auth/session/refresh-token.service';
 import { TokenBlacklistService } from '../auth/token-blacklist.service';
 import { IgClientService } from '../ig-client/ig-client.service';
 
@@ -12,6 +13,7 @@ export class SchedulerService {
   constructor(
     private readonly igClientService: IgClientService,
     private readonly tokenBlacklistService: TokenBlacklistService,
+    private readonly refreshTokenService: RefreshTokenService,
     private readonly configService: ConfigService,
   ) {}
 
@@ -29,6 +31,11 @@ export class SchedulerService {
   @Cron(CronExpression.EVERY_DAY_AT_3AM)
   async purgeExpiredBlacklistedTokens(): Promise<void> {
     await this.tokenBlacklistService.purgeExpired();
+  }
+
+  @Cron(CronExpression.EVERY_DAY_AT_3AM)
+  async purgeExpiredRefreshTokens(): Promise<void> {
+    await this.refreshTokenService.purgeExpired();
   }
 
   /**
