@@ -21,9 +21,12 @@ import { SecretsService } from '../secrets/secrets.service';
         await secretsService.ensureLoaded();
         return {
           type: 'postgres' as const,
-          host: secretsService.getOptionalString('DB_HOST') ?? configService.get<string>('DB_HOST', '127.0.0.1'),
+          host:
+            secretsService.getOptionalString('DB_HOST') ??
+            configService.get<string>('DB_HOST', '127.0.0.1'),
           port: Number(
-            secretsService.getOptionalString('DB_PORT') ?? configService.get<number>('DB_PORT', 5432),
+            secretsService.getOptionalString('DB_PORT') ??
+              configService.get<number>('DB_PORT', 5432),
           ),
           username:
             secretsService.getOptionalString('DB_USERNAME') ??

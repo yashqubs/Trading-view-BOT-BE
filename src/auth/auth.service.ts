@@ -191,7 +191,6 @@ export class AuthService {
     }
 
     await this.verifyOtp(user, dto.code, 'RESET');
-    console.log(user);
 
     user.passwordHash = await AuthService.hashPassword(dto.newPassword);
     user.mustChangePassword = false;
