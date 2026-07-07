@@ -23,7 +23,7 @@
     "typeorm": "typeorm-ts-node-commonjs",
     "migration:generate": "pnpm typeorm migration:generate -d src/database/data-source.ts",
     "migration:run": "ts-node -r tsconfig-paths/register src/database/run-migrations.ts",
-    "migration:revert": "pnpm typeorm migration:revert -d src/database/data-source.ts",
+    "migration:revert": "ts-node -r tsconfig-paths/register src/database/revert-migration.ts",
     "seed": "ts-node -r tsconfig-paths/register src/database/seeds/seed.ts",
     "clear-db": "ts-node -r tsconfig-paths/register src/database/clear-db.ts",
     "remove-stock": "ts-node -r tsconfig-paths/register src/database/remove-stock.ts"
