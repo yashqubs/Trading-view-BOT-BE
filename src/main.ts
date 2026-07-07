@@ -6,16 +6,28 @@ import { json } from 'express';
 import helmet from 'helmet';
 
 import { loadSecrets } from './config/secrets-manager';
-import { buildCorsOptions, getFrontendOrigins } from './config/cors-options';
+import { buildCorsOptions, getFrontendOrigins, syncFrontendOrigin } from './config/cors-options';
+import { loadEnvFile } from './database/load-env';
 import { AppModule } from './app.module';
 import { GlobalExceptionFilter } from './common/filters/http-exception.filter';
 import { ConfiguredSocketIoAdapter } from './realtime/configured-socket-io.adapter';
+import { SecretsService } from './secrets/secrets.service';
 
 async function bootstrap(): Promise<void> {
-  if (process.env.SECRETS_SOURCE === 'aws') {
-    const secrets = await loadSecrets(process.env.SECRET_NAME_APP!);
+  const logger = new Logger('Bootstrap');
 
+  // PM2 only injects NODE_ENV — .env must be read before the AWS secrets bootstrap.
+  loadEnvFile();
+
+  if (process.env.SECRETS_SOURCE === 'aws') {
+    const secretName = process.env.SECRET_NAME_APP;
+    if (!secretName) {
+      throw new Error('SECRET_NAME_APP is required when SECRETS_SOURCE=aws');
+    }
+
+    const secrets = await loadSecrets(secretName);
     Object.assign(process.env, secrets);
+    logger.log(`Loaded secrets from ${secretName}`);
   }
 
   const app = await NestFactory.create(AppModule, {
@@ -23,7 +35,9 @@ async function bootstrap(): Promise<void> {
   });
 
   const configService = app.get(ConfigService);
-  const logger = new Logger('Bootstrap');
+  const secretsService = app.get(SecretsService);
+  await secretsService.ensureLoaded();
+  syncFrontendOrigin(configService, secretsService);
 
   app.enableShutdownHooks();
 
