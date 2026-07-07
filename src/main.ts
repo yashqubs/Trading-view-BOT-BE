@@ -6,6 +6,7 @@ import { json } from 'express';
 import helmet from 'helmet';
 
 import { loadSecrets } from './config/secrets-manager';
+import { buildCorsOptions, getFrontendOrigins } from './config/cors-options';
 import { AppModule } from './app.module';
 import { GlobalExceptionFilter } from './common/filters/http-exception.filter';
 import { ConfiguredSocketIoAdapter } from './realtime/configured-socket-io.adapter';
@@ -33,10 +34,15 @@ async function bootstrap(): Promise<void> {
   app.setGlobalPrefix('api', {
     exclude: [{ path: 'health', method: RequestMethod.GET }],
   });
-  app.enableCors({
-    origin: configService.get<string>('FRONTEND_ORIGIN'),
-    credentials: true,
-  });
+
+  const allowedOrigins = getFrontendOrigins(configService);
+  if (allowedOrigins.length === 0) {
+    logger.error('FRONTEND_ORIGIN is not set — browser requests will be blocked by CORS');
+  } else {
+    logger.log(`CORS allowed origins: ${allowedOrigins.join(', ')}`);
+  }
+
+  app.enableCors(buildCorsOptions(configService));
 
   app.useWebSocketAdapter(new ConfiguredSocketIoAdapter(app));
 
