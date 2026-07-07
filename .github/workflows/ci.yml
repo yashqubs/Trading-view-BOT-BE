@@ -58,7 +58,6 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_SSH_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
-          script_stop: true
           script: |
             sudo bash <<'EOF'
             set -euo pipefail
@@ -81,7 +80,7 @@ jobs:
             pnpm build
 
             echo "Restarting application..."
-            pm2 restart trading_view_bot || pm2 start ecosystem.config.js --only trading_view_bot
+            pm2 restart trading_view_bot || pm2 start ecosystem.config.js
 
             pm2 save
 

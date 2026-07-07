@@ -15,7 +15,7 @@ export class SystemService {
   async getStatus(): Promise<SystemStatus> {
     const baseUrl = this.configService.get<string>('PUBLIC_BASE_URL', '');
     return {
-      webhookUrl: `${baseUrl}/webhook/signal`,
+      webhookUrl: `${baseUrl}/api/webhook/signal`,
       igConnected: this.igClientService.isSessionActive(),
       igSessionExpiresAt: this.igClientService.getSessionExpiresAt(),
       lastSignalReceivedAt: await this.tradeService.getLastSignalReceivedAt(),

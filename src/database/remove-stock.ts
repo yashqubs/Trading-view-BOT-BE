@@ -1,4 +1,4 @@
-import { AppDataSource } from './data-source';
+import { ensureDbCredentials } from './load-db-credentials';
 
 /**
  * Permanently removes one or more stocks: the stock_mapping config row AND
@@ -21,6 +21,9 @@ async function removeStock(): Promise<void> {
     console.log('       pnpm remove-stock --all -- --yes');
     process.exit(1);
   }
+
+  await ensureDbCredentials();
+  const { AppDataSource } = await import('./data-source');
 
   await AppDataSource.initialize();
 
