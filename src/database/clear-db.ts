@@ -1,4 +1,4 @@
-import { AppDataSource } from './data-source';
+import { ensureDbCredentials } from './load-db-credentials';
 
 // Every table this app owns. Order doesn't matter for TRUNCATE — CASCADE
 // handles the real FKs (refresh_tokens -> users, stock_mapping -> markets) —
@@ -37,6 +37,9 @@ async function clearDb(): Promise<void> {
     console.log('\nRe-run with --yes to actually do it: pnpm clear-db --yes');
     process.exit(1);
   }
+
+  await ensureDbCredentials();
+  const { AppDataSource } = await import('./data-source');
 
   await AppDataSource.initialize();
 
