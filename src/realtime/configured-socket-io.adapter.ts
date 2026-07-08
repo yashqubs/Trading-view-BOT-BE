@@ -2,6 +2,7 @@ import { INestApplicationContext } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { IoAdapter } from '@nestjs/platform-socket.io';
 import { ServerOptions } from 'socket.io';
+import { buildCorsOptions } from '../config/cors-options';
 
 /**
  * @WebSocketGateway()'s own `cors` option is evaluated as a decorator
@@ -18,12 +19,10 @@ export class ConfiguredSocketIoAdapter extends IoAdapter {
 
   createIOServer(port: number, options?: ServerOptions): unknown {
     const configService = this.app.get(ConfigService);
+    const corsOptions = buildCorsOptions(configService);
     return super.createIOServer(port, {
       ...options,
-      cors: {
-        origin: configService.get<string>('FRONTEND_ORIGIN'),
-        credentials: true,
-      },
+      cors: corsOptions,
     });
   }
 }
