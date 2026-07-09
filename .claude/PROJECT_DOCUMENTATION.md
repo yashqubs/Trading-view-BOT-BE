@@ -358,32 +358,43 @@ The portal UI shows this as three inline steps on the login page: enter email �
 
 ## 7. Environment Variables & Secrets
 
-### Non-Sensitive (.env file on server)
+> In production, ALL configuration — sensitive and non-sensitive — lives in the app secret in AWS Secrets Manager. At boot, `main.ts` fetches the app secret and merges every key in its JSON into `process.env` (overriding `.env`) before Nest starts, so `ConfigService` picks everything up with no code awareness of where a value came from. The server's `.env` holds only the bootstrap keys needed to reach Secrets Manager in the first place. Changing any value in the secret requires a `pm2 restart` to take effect (the boot-time merge is not re-run by the hourly refresh, which only covers the six sensitive keys in `SecretsService`).
+
+### Bootstrap keys (.env file on server — the only keys that cannot live in the secret)
 
 | Variable | Description | Example |
 |---|---|---|
+| NODE_ENV | Environment (also injected by PM2) | production |
+| SECRETS_SOURCE | `aws` in production (`local` allowed only in development) | aws |
+| AWS_REGION | AWS region, needed to construct the Secrets Manager client | eu-west-2 |
+| SECRET_NAME_APP | Name of the app secret | prod/trading-bot/app |
+| SECRET_NAME_IG | Name of the IG secret | prod/trading-bot/ig |
+
+### App secret (Secrets Manager, `SECRET_NAME_APP`) — all other configuration
+
+| Key | Description | Example |
+|---|---|---|
+| DB_PASSWORD | **Sensitive** | |
+| JWT_SECRET | **Sensitive** | |
+| WEBHOOK_SECRET | **Sensitive** | |
 | PORT | Server port | 3000 |
-| NODE_ENV | Environment | production |
-| AWS_REGION | AWS region | eu-west-2 |
 | DB_HOST | Always localhost | 127.0.0.1 |
 | DB_PORT | PostgreSQL port | 5432 |
 | DB_NAME | Database name | trading_view_bot |
+| DB_USERNAME | Database user | trading_view_bot |
 | FRONTEND_ORIGIN | Portal URL (CORS + emailed portal links) | https://portal.your-domain.com |
 | PUBLIC_BASE_URL | This backend's own public URL — builds the webhook URL shown on Settings (`{PUBLIC_BASE_URL}/api/webhook/signal`) | https://api.your-domain.com |
 | TRADINGVIEW_IPS | Comma-separated webhook source IPs checked by `TradingViewIpGuard` (Section 5 Layer 3). Unset = fails closed, no signal ever gets through | 52.89.214.238,34.212.75.30,54.218.53.128,52.32.178.7 |
 | EMAIL_FROM | Verified SES sender identity | no-reply@your-domain.com |
-| SEED_ADMIN_NAME, SEED_ADMIN_EMAIL, SEED_ADMIN_PASSWORD | Optional — only read by `pnpm seed`, only on its first run. Omit the password to get a random one-time temp password printed to console instead. Never commit real values | (local .env only) |
-| SECRET_NAME_IG | Secrets Manager key name | prod/trading-bot/ig |
-| SECRET_NAME_APP | Secrets Manager key name | prod/trading-bot/app |
+| IG_BASE_URL | IG REST base URL (demo vs live) | https://demo-api.ig.com/gateway/deal |
 
-### Sensitive (AWS Secrets Manager — never on disk)
+### IG secret (Secrets Manager, `SECRET_NAME_IG`)
 
-| Secret | Stored In |
+| Key | Description |
 |---|---|
-| IG_API_KEY, IG_USERNAME, IG_PASSWORD | prod/trading-bot/ig |
-| DB_PASSWORD | prod/trading-bot/app |
-| JWT_SECRET | prod/trading-bot/app |
-| WEBHOOK_SECRET | prod/trading-bot/app |
+| IG_API_KEY, IG_USERNAME, IG_PASSWORD | **Sensitive** — IG broker credentials |
+
+Local development still uses `.env` for everything with `SECRETS_SOURCE=local` (blocked in production). `SEED_ADMIN_NAME/EMAIL/PASSWORD` are read only by `pnpm seed` on its first run and belong in local `.env` only — never commit real values.
 
 ---
 
