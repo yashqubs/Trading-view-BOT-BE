@@ -28,6 +28,13 @@ import { UserService } from '../user/user.service';
 
 const LOGIN_THROTTLE = { default: { limit: 5, ttl: 900_000 } };
 
+// Refresh is not a brute-forceable credential entry point (the token is an
+// opaque 256-bit value), and legitimate traffic is bursty: every open tab
+// refreshes when the 15-minute access token lapses, plus page reloads. The
+// login limit of 5/15min is far too tight for that — one user with a few
+// tabs would trip it and get logged out mid-session.
+const REFRESH_THROTTLE = { default: { limit: 30, ttl: 900_000 } };
+
 @Controller('auth')
 export class AuthController {
   constructor(
@@ -150,7 +157,7 @@ export class AuthController {
   // the user stays active; the refresh cookie is opaque and has its own
   // sliding idle timeout (see RefreshTokenService).
   @Post('refresh')
-  @Throttle(LOGIN_THROTTLE)
+  @Throttle(REFRESH_THROTTLE)
   @HttpCode(HttpStatus.OK)
   async refresh(
     @Req() request: Request,

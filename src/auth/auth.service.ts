@@ -224,9 +224,9 @@ export class AuthService {
   /**
    * Silently renews an expired-or-expiring access token using the refresh
    * cookie — see RefreshTokenService.rotate for the single-use/sliding-idle
-   * mechanics. Throws (and clears cookies) if the refresh token is missing,
-   * unknown, or past its idle window — the frontend treats that as "log in
-   * again", same as any other 401.
+   * mechanics. Throws if the refresh token is missing, unknown, or past its
+   * idle window — the frontend treats that as "log in again", same as any
+   * other 401.
    */
   async refresh(refreshToken: string | undefined, response: Response): Promise<User> {
     const invalid = new UnauthorizedException('Session expired');
@@ -234,9 +234,13 @@ export class AuthService {
       throw invalid;
     }
 
+    // Deliberately does NOT clear cookies on failure: refresh tokens are
+    // single-use, so when two tabs race at access-token expiry the loser
+    // lands here — but the winner has already installed fresh cookies in
+    // the browser's shared jar, and clearing would wipe those and log every
+    // tab out. The stale token is already deleted server-side either way.
     const rotated = await this.refreshTokenService.rotate(refreshToken);
     if (!rotated) {
-      this.sessionService.clearCookie(response);
       throw invalid;
     }
 

@@ -446,13 +446,16 @@ describe('AuthService', () => {
       expect(refreshTokenService.rotate).not.toHaveBeenCalled();
     });
 
-    it('rejects and clears cookies when the refresh token is unknown/expired', async () => {
+    it('rejects WITHOUT clearing cookies when the refresh token is unknown/expired', async () => {
+      // Clearing here would wipe the fresh cookies a sibling tab may have
+      // just installed after winning the single-use rotation race — see the
+      // comment in AuthService.refresh.
       refreshTokenService.rotate.mockResolvedValue(null);
 
       await expect(service.refresh('stale-token', mockResponse)).rejects.toThrow(
         UnauthorizedException,
       );
-      expect(sessionService.clearCookie).toHaveBeenCalledWith(mockResponse);
+      expect(sessionService.clearCookie).not.toHaveBeenCalled();
     });
 
     it('rejects if the user behind a valid refresh token no longer exists or is inactive', async () => {

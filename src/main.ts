@@ -1,6 +1,7 @@
 import { Logger, RequestMethod, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import cookieParser from 'cookie-parser';
 import { json } from 'express';
 import helmet from 'helmet';
@@ -30,9 +31,16 @@ async function bootstrap(): Promise<void> {
     logger.log(`Loaded secrets from ${secretName}`);
   }
 
-  const app = await NestFactory.create(AppModule, {
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     bodyParser: true,
   });
+
+  // Nginx terminates TLS on this same host and proxies over loopback. Without
+  // this, req.ip is 127.0.0.1 for every request, so the per-IP throttler
+  // (login lockout, refresh limit) lumps all users into one shared bucket.
+  // 'loopback' trusts only that one hop — X-Forwarded-For values a client
+  // sends directly are still ignored.
+  app.set('trust proxy', 'loopback');
 
   const configService = app.get(ConfigService);
   const secretsService = app.get(SecretsService);
