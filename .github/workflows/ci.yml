@@ -63,6 +63,20 @@ jobs:
 
             cd /var/www/quantum-trade/Trading-view-BOT-BE
 
+            echo "Checking repository file ownership..."
+            WRONG_OWNER=$(find . -not -user "$(whoami)" -print -quit 2>/dev/null || true)
+            if [ -n "$WRONG_OWNER" ]; then
+              echo "Found files not owned by $(whoami) (e.g. $WRONG_OWNER). Attempting to fix..."
+              if sudo -n chown -R "$(whoami):$(whoami)" /var/www/quantum-trade/Trading-view-BOT-BE 2>/dev/null; then
+                echo "Ownership fixed."
+              else
+                echo "ERROR: repo contains files owned by another user, so git fetch would fail."
+                echo "Fix on the server:  sudo chown -R $(whoami):$(whoami) /var/www/quantum-trade/Trading-view-BOT-BE"
+                echo "Cause: git/pnpm was run with sudo in this directory at some point - never do that."
+                exit 1
+              fi
+            fi
+
             echo "Fetching latest code..."
             git fetch origin main
             git reset --hard origin/main
