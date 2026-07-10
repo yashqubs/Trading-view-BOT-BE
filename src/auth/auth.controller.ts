@@ -16,13 +16,11 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { AuthService, LoginChallengeResult, OtpSentResult } from './auth.service';
-import { Disable2faDto } from './dto/disable-2fa.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { Login2faDto } from './dto/login-2fa.dto';
 import { LoginDto } from './dto/login.dto';
 import { ResendOtpDto } from './dto/resend-otp.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
-import { Verify2faDto } from './dto/verify-2fa.dto';
 import { User } from '../user/entities/user.entity';
 import { UserService } from '../user/user.service';
 
@@ -89,32 +87,14 @@ export class AuthController {
     return { message: 'Password updated. You can now sign in with your new password.' };
   }
 
-  @Post('2fa/setup')
+  // Enable/disable are plain authenticated toggles — no OTP or password
+  // confirmation, by product decision (see AuthService.enable2fa).
+  @Post('2fa/enable')
   @UseGuards(JwtAuthGuard)
-  @Throttle(LOGIN_THROTTLE)
   @HttpCode(HttpStatus.OK)
-  setup2fa(@CurrentUser() user: AuthenticatedUser): Promise<OtpSentResult> {
-    return this.authService.setup2fa(user.id);
-  }
-
-  @Post('2fa/resend')
-  @UseGuards(JwtAuthGuard)
-  @Throttle(LOGIN_THROTTLE)
-  @HttpCode(HttpStatus.OK)
-  resendSetupOtp(@CurrentUser() user: AuthenticatedUser): Promise<OtpSentResult> {
-    return this.authService.resendSetupOtp(user.id);
-  }
-
-  @Post('2fa/verify')
-  @UseGuards(JwtAuthGuard)
-  @Throttle(LOGIN_THROTTLE)
-  @HttpCode(HttpStatus.OK)
-  async verify2faSetup(
-    @CurrentUser() user: AuthenticatedUser,
-    @Body() dto: Verify2faDto,
-  ): Promise<{ user: User }> {
-    const verifiedUser = await this.authService.verify2faSetup(user.id, dto);
-    return { user: verifiedUser };
+  async enable2fa(@CurrentUser() user: AuthenticatedUser): Promise<{ user: User }> {
+    const updatedUser = await this.authService.enable2fa(user.id);
+    return { user: updatedUser };
   }
 
   @Post('2fa/skip')
@@ -128,11 +108,8 @@ export class AuthController {
   @Post('2fa/disable')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
-  async disable2fa(
-    @CurrentUser() user: AuthenticatedUser,
-    @Body() dto: Disable2faDto,
-  ): Promise<{ user: User }> {
-    const updatedUser = await this.authService.disable2fa(user.id, dto);
+  async disable2fa(@CurrentUser() user: AuthenticatedUser): Promise<{ user: User }> {
+    const updatedUser = await this.authService.disable2fa(user.id);
     return { user: updatedUser };
   }
 

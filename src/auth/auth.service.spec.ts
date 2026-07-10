@@ -180,59 +180,30 @@ describe('AuthService', () => {
     });
   });
 
-  describe('setup2fa / verify2faSetup', () => {
-    it('emails a setup OTP', async () => {
+  describe('enable2fa', () => {
+    it('enables 2FA directly, without any OTP confirmation', async () => {
       const user = buildUser();
       repository.findOneByOrFail.mockResolvedValue(user);
 
-      const result = await service.setup2fa(user.id);
-
-      expect(result.maskedEmail).toContain('@example.com');
-      expect(emailService.sendOtpEmail).toHaveBeenCalledWith(
-        user.email,
-        expect.any(String),
-        'SETUP',
-      );
-      expect(user.twoFactorEnabled).toBe(false);
-    });
-
-    it('rejects if 2FA is already enabled', async () => {
-      const user = buildUser({ twoFactorEnabled: true });
-      repository.findOneByOrFail.mockResolvedValue(user);
-
-      await expect(service.setup2fa(user.id)).rejects.toThrow(BadRequestException);
-    });
-
-    it('enables 2FA on a valid code', async () => {
-      const user = buildUser();
-      repository.findOneByOrFail.mockResolvedValue(user);
-      await service.setup2fa(user.id);
-
-      const result = await service.verify2faSetup(user.id, { code: lastSentCode() });
+      const result = await service.enable2fa(user.id);
 
       expect(result.twoFactorEnabled).toBe(true);
+      expect(emailService.sendOtpEmail).not.toHaveBeenCalled();
+    });
+
+    it('clears any in-flight OTP state when enabling', async () => {
+      const user = buildUser({
+        otpCodeHash: 'stale-hash',
+        otpExpiresAt: new Date(Date.now() + 60_000),
+        otpPurpose: 'LOGIN',
+        otpAttempts: 2,
+      });
+      repository.findOneByOrFail.mockResolvedValue(user);
+
+      await service.enable2fa(user.id);
+
       expect(user.otpCodeHash).toBeNull();
-    });
-
-    it('rejects an invalid code', async () => {
-      const user = buildUser();
-      repository.findOneByOrFail.mockResolvedValue(user);
-      await service.setup2fa(user.id);
-
-      await expect(service.verify2faSetup(user.id, { code: '000000' })).rejects.toThrow(
-        UnauthorizedException,
-      );
-    });
-
-    it('rejects an expired code', async () => {
-      const user = buildUser();
-      repository.findOneByOrFail.mockResolvedValue(user);
-      await service.setup2fa(user.id);
-      user.otpExpiresAt = new Date(Date.now() - 1000);
-
-      await expect(service.verify2faSetup(user.id, { code: lastSentCode() })).rejects.toThrow(
-        UnauthorizedException,
-      );
+      expect(user.otpAttempts).toBe(0);
     });
   });
 
@@ -291,11 +262,13 @@ describe('AuthService', () => {
 
   describe('resend cooldown', () => {
     it('rejects a resend within the cooldown window', async () => {
-      const user = buildUser();
-      repository.findOneByOrFail.mockResolvedValue(user);
-      await service.setup2fa(user.id);
+      const user = buildUser({ passwordHash: await bcrypt.hash('pw', 12), twoFactorEnabled: true });
+      repository.findOne.mockResolvedValue(user);
+      await service.login({ email: user.email, password: 'pw' }, mockResponse);
 
-      await expect(service.resendSetupOtp(user.id)).rejects.toThrow(BadRequestException);
+      await expect(service.resendLoginOtp({ email: user.email, password: 'pw' })).rejects.toThrow(
+        BadRequestException,
+      );
     });
   });
 
@@ -421,22 +394,14 @@ describe('AuthService', () => {
   });
 
   describe('disable2fa', () => {
-    it('disables 2FA when the password is correct', async () => {
-      const user = buildUser({ passwordHash: await bcrypt.hash('pw', 12), twoFactorEnabled: true });
+    it('disables 2FA directly, without password confirmation', async () => {
+      const user = buildUser({ twoFactorEnabled: true });
       repository.findOneByOrFail.mockResolvedValue(user);
 
-      const result = await service.disable2fa(user.id, { password: 'pw' });
+      const result = await service.disable2fa(user.id);
 
       expect(result.twoFactorEnabled).toBe(false);
-    });
-
-    it('rejects an incorrect password', async () => {
-      const user = buildUser({ passwordHash: await bcrypt.hash('pw', 12), twoFactorEnabled: true });
-      repository.findOneByOrFail.mockResolvedValue(user);
-
-      await expect(service.disable2fa(user.id, { password: 'wrong' })).rejects.toThrow(
-        UnauthorizedException,
-      );
+      expect(user.otpCodeHash).toBeNull();
     });
   });
 

@@ -234,9 +234,9 @@ When a TradingView indicator fires a green (buy) or red (sell) signal, the bot a
 #### 2FA Implementation (Implemented)
 
 - Two-factor authentication is **optional**: after the forced first-login password change, the user is asked whether to enable it, and can enable/disable it any time from Settings
-- When enabled, a 6-digit code is emailed to the user's address on every login, and on the setup/disable confirmation step
+- When enabled, a 6-digit code is emailed to the user's address on every login. Enabling/disabling from Settings is a plain toggle — no confirmation code (product decision 2026-07-10; note the trade-off: enabling no longer proves email delivery works, so a user with a broken email address can lock themselves out at the next login)
 - Codes expire after 10 minutes, can be resent after a 30-second cooldown, and lock out after 5 wrong attempts (forcing a resend)
-- Disabling 2FA requires re-entering the account password
+- Disabling 2FA is likewise immediate for a logged-in session — no password re-entry
 - Codes are sent via AWS SES, authorized through the EC2 instance's IAM role — no SES credentials are stored anywhere
 - Only a salted hash of the current OTP is stored, with a short expiry; there is no long-lived secret to protect (unlike the TOTP approach this replaced), so nothing OTP-related needs encryption at rest
 
@@ -592,11 +592,9 @@ Controls the price a trade actually fills at, independent of how quantity is siz
 | POST | /auth/login/2fa/resend | Re-send the login OTP (30s cooldown) |
 | POST | /auth/forgot-password | Self-service password reset, step 1: email an OTP (`otpPurpose: 'RESET'`). Always returns the same generic message, enumeration-safe. Throttled same as login. |
 | POST | /auth/reset-password | Self-service password reset, step 2: `{ email, code, newPassword }` → verifies the code and sets the new password in one call. Same generic `401` for a wrong code or an unknown email. |
-| POST | /auth/2fa/setup | Email an OTP to confirm enabling 2FA |
-| POST | /auth/2fa/resend | Re-send the setup OTP (30s cooldown) |
-| POST | /auth/2fa/verify | Confirm 2FA setup with the emailed code |
+| POST | /auth/2fa/enable | Enable 2FA for the authenticated user — no OTP confirmation (product decision 2026-07-10) |
 | POST | /auth/2fa/skip | Acknowledge skipping 2FA setup during onboarding |
-| POST | /auth/2fa/disable | Disable 2FA (requires password confirmation) |
+| POST | /auth/2fa/disable | Disable 2FA — no password confirmation (product decision 2026-07-10) |
 | POST | /auth/logout | Blacklist token, clear cookie |
 | GET | /auth/me | Current user |
 

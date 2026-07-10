@@ -70,10 +70,10 @@ describe('CsrfGuard', () => {
     expect(guard.canActivate(context)).toBe(true);
   });
 
-  it('still rejects non-exempt auth routes without a CSRF header (e.g. 2fa setup)', () => {
+  it('still rejects non-exempt auth routes without a CSRF header (e.g. 2fa enable)', () => {
     const context = buildContext({
       method: 'POST',
-      path: '/api/auth/2fa/setup',
+      path: '/api/auth/2fa/enable',
       cookies: { access_token: 'jwt', csrf_token: 'abc123' },
       headers: {},
     });

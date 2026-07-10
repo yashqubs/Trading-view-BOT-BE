@@ -9,8 +9,6 @@ import { Login2faDto } from './dto/login-2fa.dto';
 import { LoginDto } from './dto/login.dto';
 import { ResendOtpDto } from './dto/resend-otp.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
-import { Disable2faDto } from './dto/disable-2fa.dto';
-import { Verify2faDto } from './dto/verify-2fa.dto';
 import { User } from '../user/entities/user.entity';
 import { JwtPayload } from './interfaces/jwt-payload.interface';
 import { RefreshTokenService } from './session/refresh-token.service';
@@ -118,26 +116,17 @@ export class AuthService {
     return this.issueOtp(user, 'LOGIN');
   }
 
-  async setup2fa(userId: string): Promise<OtpSentResult> {
+  /**
+   * Flips 2FA on for the authenticated user — no OTP confirmation step, by
+   * product decision (2026-07-10): the session itself is the authorization.
+   * Trade-off accepted with it: enabling doesn't prove email delivery works,
+   * so a user with a broken email address can lock themselves out at the
+   * next login.
+   */
+  async enable2fa(userId: string): Promise<User> {
     const user = await this.userRepository.findOneByOrFail({ id: userId });
-    if (user.twoFactorEnabled) {
-      throw new BadRequestException(
-        'Two-factor authentication is already enabled for this account',
-      );
-    }
-    return this.issueOtp(user, 'SETUP');
-  }
-
-  async resendSetupOtp(userId: string): Promise<OtpSentResult> {
-    const user = await this.userRepository.findOneByOrFail({ id: userId });
-    return this.issueOtp(user, 'SETUP');
-  }
-
-  async verify2faSetup(userId: string, dto: Verify2faDto): Promise<User> {
-    const user = await this.userRepository.findOneByOrFail({ id: userId });
-    await this.verifyOtp(user, dto.code, 'SETUP');
-
     user.twoFactorEnabled = true;
+    this.clearOtp(user);
     await this.userRepository.save(user);
     return user;
   }
@@ -146,13 +135,9 @@ export class AuthService {
     return this.userRepository.findOneByOrFail({ id: userId });
   }
 
-  async disable2fa(userId: string, dto: Disable2faDto): Promise<User> {
+  /** Same product decision as enable2fa: no password re-entry to disable. */
+  async disable2fa(userId: string): Promise<User> {
     const user = await this.userRepository.findOneByOrFail({ id: userId });
-    const passwordMatches = await bcrypt.compare(dto.password, user.passwordHash);
-    if (!passwordMatches) {
-      throw new UnauthorizedException('Incorrect password');
-    }
-
     user.twoFactorEnabled = false;
     this.clearOtp(user);
     await this.userRepository.save(user);
