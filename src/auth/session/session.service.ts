@@ -83,11 +83,27 @@ export class SessionService {
     // Deliberately NOT httpOnly — the frontend reads this cookie's value and
     // echoes it back as the X-CSRF-Token header (see CsrfGuard). It carries
     // no authority on its own, only a random value to double-submit.
+    //
+    // When the portal and API live on sibling subdomains (trade.* calling
+    // api-trade.*), a host-only cookie belongs to the API host and the
+    // portal's document.cookie can't see it, so the header never gets sent
+    // and every non-exempt mutation 403s. CSRF_COOKIE_DOMAIN (e.g.
+    // ".qubs.co.uk") scopes this one cookie to the shared parent domain —
+    // safe to widen precisely because it carries no authority; access_token
+    // and refresh_token stay host-only. Any pre-existing host-only variant
+    // must be cleared first: the browser treats it as a separate cookie and
+    // would send both, and whichever cookie-parser picks could break the
+    // double-submit match.
+    const csrfCookieDomain = this.configService.get<string>('CSRF_COOKIE_DOMAIN');
+    if (csrfCookieDomain) {
+      response.clearCookie('csrf_token');
+    }
     response.cookie('csrf_token', randomBytes(32).toString('hex'), {
       httpOnly: false,
       secure: isProduction,
       sameSite: 'strict',
       maxAge,
+      ...(csrfCookieDomain ? { domain: csrfCookieDomain } : {}),
     });
   }
 
@@ -107,7 +123,13 @@ export class SessionService {
 
   clearCookie(response: Response): void {
     response.clearCookie('access_token');
+    // Both variants: host-only (local dev / pre-CSRF_COOKIE_DOMAIN sessions)
+    // and domain-scoped — deletion only matches a cookie whose domain matches.
     response.clearCookie('csrf_token');
+    const csrfCookieDomain = this.configService.get<string>('CSRF_COOKIE_DOMAIN');
+    if (csrfCookieDomain) {
+      response.clearCookie('csrf_token', { domain: csrfCookieDomain });
+    }
     response.clearCookie('refresh_token');
   }
 }

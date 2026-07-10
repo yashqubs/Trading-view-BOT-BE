@@ -383,6 +383,7 @@ The portal UI shows this as three inline steps on the login page: enter email â†
 | DB_NAME | Database name | trading_view_bot |
 | DB_USERNAME | Database user | trading_view_bot |
 | FRONTEND_ORIGIN | Portal URL (CORS + emailed portal links) | https://portal.your-domain.com |
+| CSRF_COOKIE_DOMAIN | Parent domain (leading dot) the `csrf_token` cookie is scoped to, so portal JS on a sibling subdomain can read it and echo the X-CSRF-Token header. Unset = host-only cookie (fine only when portal and API share a hostname) | .your-domain.com |
 | PUBLIC_BASE_URL | This backend's own public URL â€” builds the webhook URL shown on Settings (`{PUBLIC_BASE_URL}/api/webhook/signal`) | https://api.your-domain.com |
 | TRADINGVIEW_IPS | Comma-separated webhook source IPs checked by `TradingViewIpGuard` (Section 5 Layer 3). Unset = fails closed, no signal ever gets through | 52.89.214.238,34.212.75.30,54.218.53.128,52.32.178.7 |
 | EMAIL_FROM | Verified SES sender identity | no-reply@your-domain.com |
