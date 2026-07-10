@@ -48,6 +48,38 @@ describe('CsrfGuard', () => {
     expect(guard.canActivate(context)).toBe(true);
   });
 
+  it('allows login even when a stale access_token cookie is present without a CSRF header', () => {
+    // A leftover cookie from an expired session must never lock the user
+    // out of logging in again — login authorizes by credentials, not session.
+    const context = buildContext({
+      method: 'POST',
+      path: '/api/auth/login',
+      cookies: { access_token: 'stale-jwt' },
+      headers: {},
+    });
+    expect(guard.canActivate(context)).toBe(true);
+  });
+
+  it('allows refresh with an access_token cookie but no CSRF header', () => {
+    const context = buildContext({
+      method: 'POST',
+      path: '/api/auth/refresh',
+      cookies: { access_token: 'expired-jwt', refresh_token: 'opaque' },
+      headers: {},
+    });
+    expect(guard.canActivate(context)).toBe(true);
+  });
+
+  it('still rejects non-exempt auth routes without a CSRF header (e.g. 2fa setup)', () => {
+    const context = buildContext({
+      method: 'POST',
+      path: '/api/auth/2fa/setup',
+      cookies: { access_token: 'jwt', csrf_token: 'abc123' },
+      headers: {},
+    });
+    expect(() => guard.canActivate(context)).toThrow(ForbiddenException);
+  });
+
   it('rejects a state-changing request with a session cookie but no CSRF header', () => {
     const context = buildContext({
       method: 'PATCH',

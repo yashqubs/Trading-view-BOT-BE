@@ -2,7 +2,27 @@ import { CanActivate, ExecutionContext, ForbiddenException, Injectable } from '@
 import { Request } from 'express';
 
 const CSRF_PROTECTED_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
-const CSRF_EXEMPT_PATH_PREFIXES = ['/webhook'];
+
+// Exempt routes authorize by something other than the session cookie — the
+// webhook by IP whitelist + shared secret, the auth routes by credentials,
+// OTP code, or the opaque refresh token. None of them exercise any authority
+// a CSRF attack could ride on, and enforcing here can lock a user out of
+// logging in entirely: a stale access_token cookie left over from an expired
+// session makes the guard demand a csrf header the login page can't always
+// produce. Listed with and without the global 'api' prefix because
+// request.path includes it at runtime but not in unit tests.
+const CSRF_EXEMPT_PATH_PREFIXES = [
+  '/webhook',
+  '/api/webhook',
+  '/auth/login',
+  '/api/auth/login',
+  '/auth/forgot-password',
+  '/api/auth/forgot-password',
+  '/auth/reset-password',
+  '/api/auth/reset-password',
+  '/auth/refresh',
+  '/api/auth/refresh',
+];
 
 /**
  * Double-submit CSRF check: the non-httpOnly `csrf_token` cookie (readable by
