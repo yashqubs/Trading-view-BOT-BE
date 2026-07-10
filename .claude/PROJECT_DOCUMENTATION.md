@@ -296,33 +296,30 @@ No system is 100% secure. With points 1–5 implemented, this system now closes 
 
 ## 6. User Management
 
-A simple user management system so an admin can create additional portal users without touching the database.
+A simple user management system so a portal user can create additional users without touching the database.
 
-### Roles
+### Access model
 
-| Role | Permissions |
-|---|---|
-| ADMIN | Full access — manage users, all settings, all stocks, all trades |
-| VIEWER | Read-only — view dashboard, stats, trade history. Cannot change settings or trade config |
-
-> v1 keeps this deliberately simple: two roles only. The first user (Vipul) is ADMIN, created during deployment via a seed script.
+There are no roles — every authenticated user has full access to everything (an earlier ADMIN/VIEWER split was removed; the `users.role` column was dropped by the `DropUserRole` migration). The first user is created during deployment via a seed script.
 
 ### User Management Endpoints
 
-| Method | Path | Role | Description |
-|---|---|---|---|
-| GET | /users | ADMIN | List all users |
-| POST | /users | ADMIN | Create a new user (email, name, role, temp password) |
-| PATCH | /users/:id | ADMIN | Update name, role, or active status |
-| POST | /users/:id/reset-password | ADMIN | Resend the pending temp password, or generate a new one if none is pending — see below |
-| DELETE | /users/:id | ADMIN | Deactivate a user (soft delete) |
-| GET | /users/me | Any | Get own profile |
-| PATCH | /users/me/password | Any | Change own password |
+All endpoints require an authenticated session; there is no per-endpoint role distinction.
+
+| Method | Path | Description |
+|---|---|---|
+| GET | /users | List all users |
+| POST | /users | Create a new user (email, name, temp password) |
+| PATCH | /users/:id | Update name or active status |
+| POST | /users/:id/reset-password | Resend the pending temp password, or generate a new one if none is pending — see below |
+| DELETE | /users/:id | Deactivate a user (soft delete) |
+| GET | /users/me | Get own profile |
+| PATCH | /users/me/password | Change own password |
 
 ### Create User Flow (Simple)
 
-1. Admin goes to Users page → clicks "Add User"
-2. Enters: name, email, role (Admin / Viewer)
+1. Go to Users page → click "Add User"
+2. Enter: name, email
 3. System generates a temporary password, shows it once to the admin, and emails the new user an invite (temp password + portal link)
 4. New user logs in with the temp password
 5. On first login, the user is forced to set a new password, then can optionally enable two-factor authentication
@@ -351,8 +348,8 @@ The portal UI shows this as three inline steps on the login page: enter email �
 ### User Table Behaviour
 
 - Deleting a user is a soft delete (sets `active = false`) so trade history attribution is preserved
-- An admin cannot deactivate their own account or remove their own admin role (prevents lockout)
-- At least one active admin must always exist (enforced server-side)
+- A user cannot deactivate their own account (prevents lockout)
+- At least one active user must always exist (enforced server-side)
 
 ---
 
@@ -405,7 +402,7 @@ Local development still uses `.env` for everything with `SECRETS_SOURCE=local` (
 
 | Table | Purpose |
 |---|---|
-| users | Portal accounts with roles and 2FA |
+| users | Portal accounts with 2FA |
 | token_blacklist | Invalidated JWTs (logout) |
 | stock_mapping | Per-stock config — Epic, amount, conditions |
 | trading_rules | Global trading conditions (single row) |
@@ -419,7 +416,6 @@ Local development still uses `.env` for everything with `SECRETS_SOURCE=local` (
 | name | VARCHAR(255) | Display name |
 | email | VARCHAR(255), Unique | Login email |
 | password_hash | VARCHAR(255) | bcrypt cost 12 |
-| role | VARCHAR(20) | ADMIN or VIEWER |
 | active | BOOLEAN | Soft delete flag, default true |
 | two_factor_enabled | BOOLEAN | Default false; user opts in after first login or via Settings |
 | otp_code_hash | VARCHAR(64), Nullable | SHA-256 hash of the current email OTP |
@@ -545,7 +541,7 @@ Bot master switch, allow buy/sell toggles, daily max total investment, daily max
 
 ### Per-Stock Conditions (stock_mapping)
 
-Investment amount, max daily spend per stock, cool-down minutes, max open positions per stock, enabled toggle. Each configured individually per stock — writable via `PATCH /mapping/:id`, from either the Stocks list edit modal or the stock's own detail page in the portal. Reads (`GET /mapping`, `GET /mapping/:id`) are open to both roles; writes are ADMIN-only (see `MappingController`).
+Investment amount, max daily spend per stock, cool-down minutes, max open positions per stock, enabled toggle. Each configured individually per stock — writable via `PATCH /mapping/:id`, from either the Stocks list edit modal or the stock's own detail page in the portal. All mapping endpoints require an authenticated session (see `MappingController`).
 
 ### Execution Mode — Market Price vs. Signal Price
 
@@ -569,7 +565,7 @@ Controls the price a trade actually fills at, independent of how quantity is siz
 | Module | Responsibility |
 |---|---|
 | AuthModule | Login, JWT, 2FA, brute force protection |
-| UserModule | User CRUD, roles, password reset |
+| UserModule | User CRUD, password reset |
 | SecretsModule | Fetches secrets from AWS Secrets Manager at boot |
 | IGClientModule | IG API session + all IG calls |
 | WebhookModule | Receives signals with IP + secret validation |
@@ -628,9 +624,9 @@ Internal service. Methods: login, refreshSession, searchMarkets, getOpenPosition
 
 ### SystemModule
 
-| Method | Path | Role | Description |
-|---|---|---|---|
-| GET | /system/status | ADMIN, VIEWER | `{ webhookUrl, igConnected, igSessionExpiresAt, lastSignalReceivedAt }` |
+| Method | Path | Description |
+|---|---|---|
+| GET | /system/status | `{ webhookUrl, igConnected, igSessionExpiresAt, lastSignalReceivedAt }` |
 
 `lastSignalReceivedAt` reads `MAX(signal_received_at)` off `trade_log` — since `SignalService`/`TradeService` write a row for every webhook delivery (trade, skip, or `DUPLICATE_SIGNAL`), this is an accurate "is TradingView actually reaching us" indicator without any extra state to maintain.
 
@@ -655,15 +651,14 @@ Internal service. Methods: login, refreshSession, searchMarkets, getOpenPosition
 |---|---|---|
 | Login | /login | Email + password + 2FA |
 | Dashboard | / | Global stats + charts |
-| Stocks | /stocks | Per-stock config table (Admin only) |
-| Stock Detail | /stocks/:ticker | Single-stock statistics + charts + per-stock trading conditions (Viewer: read-only) |
-| Markets | /markets | Search/manage the IG tradeable-market list (Admin only) |
+| Stocks | /stocks | Per-stock config table |
+| Stock Detail | /stocks/:ticker | Single-stock statistics + charts + per-stock trading conditions |
+| Markets | /markets | Search/manage the IG tradeable-market list |
 | Open Positions | /positions | Currently open positions, live from IG |
 | Trades | /trades | Full trade history with filters + CSV export |
-| Conditions | /conditions | Global trading rules (Viewer: read-only) |
-| Users | /users | User management (Admin only) |
+| Conditions | /conditions | Global trading rules |
+| Users | /users | User management |
 | Settings | /settings | Webhook URL, IG status, last TradingView signal received, password, 2FA |
-| Roles & Access | /access | Static reference page — every feature plus what Admin vs. Viewer can do with it. Informational only, no API calls; visible to both roles |
 
 ### Stack
 

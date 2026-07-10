@@ -1,16 +1,12 @@
 import { Controller, Get, Query, Res, UseGuards } from '@nestjs/common';
 import { Response } from 'express';
-import { Roles } from '../common/decorators/roles.decorator';
-import { UserRole } from '../common/enums';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
-import { RolesGuard } from '../common/guards/roles.guard';
 import { TradeLogQueryDto } from './dto/trade-log-query.dto';
 import { PaginatedTradeLogs, TradeService } from './trade.service';
 import { tradeLogsToCsv } from './utils/trade-log-csv.util';
 
 @Controller('trades')
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(UserRole.ADMIN, UserRole.VIEWER)
+@UseGuards(JwtAuthGuard)
 export class TradeController {
   constructor(private readonly tradeService: TradeService) {}
 

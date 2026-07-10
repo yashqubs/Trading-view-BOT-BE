@@ -2,7 +2,6 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { UserRole } from '../../common/enums';
 import { SecretsService } from '../../secrets/secrets.service';
 import { User } from '../../user/entities/user.entity';
 import { RefreshTokenService } from './refresh-token.service';
@@ -16,7 +15,6 @@ describe('SessionService', () => {
   const user = {
     id: 'user-1',
     email: 'admin@example.com',
-    role: UserRole.ADMIN,
   } as User;
 
   function issuedCookie(name: string): { value: string; options: Record<string, unknown> } {

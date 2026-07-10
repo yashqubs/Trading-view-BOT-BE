@@ -62,7 +62,6 @@ export class SessionService {
     const payload: JwtPayload = {
       sub: user.id,
       email: user.email,
-      role: user.role,
       pending,
       sessionId,
     };

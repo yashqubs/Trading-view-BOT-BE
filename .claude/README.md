@@ -44,6 +44,6 @@ CLAUDE.md                      Root context + documentation reference
 - Fail-safe on trades: when uncertain, skip and log
 - Mandatory SELL position check
 - Condition pipeline order is fixed
-- Every endpoint role-guarded; webhook IP + secret guarded
+- Every portal endpoint JWT-guarded; webhook IP + secret guarded
 - Dependency scanning gates deployment
 - CI (lint/build/test/audit) must pass before CD deploys — enforced by `needs:` in `.github/workflows/ci.yml`, not just convention

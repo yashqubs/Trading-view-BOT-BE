@@ -57,6 +57,6 @@ export class WsAuthService {
       return null;
     }
 
-    return { id: user.id, email: user.email, role: user.role, pending: payload.pending };
+    return { id: user.id, email: user.email, pending: payload.pending };
   }
 }

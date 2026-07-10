@@ -13,7 +13,7 @@ These rules supplement CLAUDE.md. They are enforced in review.
 
 ## Security rules
 
-- Every portal endpoint has a guard: `@UseGuards(JwtAuthGuard, RolesGuard)` with `@Roles(...)`.
+- Every portal endpoint has a guard: `@UseGuards(JwtAuthGuard)`. There are no roles — every authenticated user has full access.
 - The webhook endpoint uses `TradingViewIpGuard` and `WebhookSecretGuard`, not JWT.
 - Validate every request body with a DTO and class-validator decorators. Enable `whitelist: true` and `forbidNonWhitelisted: true` on the global ValidationPipe.
 - Never return password_hash or otp_code_hash in any response. Use class-transformer `@Exclude()`.
@@ -56,7 +56,7 @@ These rules supplement CLAUDE.md. They are enforced in review.
 
 - Mock IG client and Secrets Manager in all tests.
 - Cover every trade status path.
-- Test auth guards and role enforcement.
+- Test auth guards.
 - Test the quantity calculation including edge cases.
 
 ## TypeScript

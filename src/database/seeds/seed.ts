@@ -4,7 +4,6 @@ import { ensureDbCredentials } from '../load-db-credentials';
 import { User } from '../../user/entities/user.entity';
 import { TradingRules } from '../../trading-rules/entities/trading-rules.entity';
 import { Market } from '../../markets/entities/market.entity';
-import { UserRole } from '../../common/enums';
 const BCRYPT_COST = 12;
 const SINGLETON_ID = 1;
 
@@ -21,8 +20,8 @@ async function seed(): Promise<void> {
   const tradingRulesRepository = AppDataSource.getRepository(TradingRules);
   const marketRepository = AppDataSource.getRepository(Market);
 
-  const existingAdminCount = await userRepository.count({ where: { role: UserRole.ADMIN } });
-  if (existingAdminCount === 0) {
+  const existingUserCount = await userRepository.count();
+  if (existingUserCount === 0) {
     // SEED_ADMIN_PASSWORD lets a deliberate real password be provided via
     // env var (set it in your local, gitignored .env — never hardcode a
     // real credential into this file, it would sit in git history in
@@ -31,21 +30,18 @@ async function seed(): Promise<void> {
     const explicitPassword = process.env.SEED_ADMIN_PASSWORD;
     // const password = explicitPassword ?? generateTempPassword();
     const password = 'Quantum@2026';
-    const admin = userRepository.create({
+    const firstUser = userRepository.create({
       name: process.env.SEED_ADMIN_NAME ?? 'Yash',
       email: process.env.SEED_ADMIN_EMAIL ?? 'yash@qubs.co.uk',
       passwordHash: await bcrypt.hash(password, BCRYPT_COST),
-      role: UserRole.ADMIN,
       active: true,
       twoFactorEnabled: false,
       mustChangePassword: true,
     });
-    await userRepository.save(admin);
+    await userRepository.save(firstUser);
 
-    console.log(
-      'First admin user created (exactly one — this check only runs when none exist yet).',
-    );
-    console.log(`  email: ${admin.email}`);
+    console.log('First user created (exactly one — this check only runs when none exist yet).');
+    console.log(`  email: ${firstUser.email}`);
 
     if (explicitPassword) {
       console.log('  password: (from SEED_ADMIN_PASSWORD — not re-printed here)');
@@ -58,7 +54,7 @@ async function seed(): Promise<void> {
       'The user must change their password on first login, then can optionally enable two-factor authentication.',
     );
   } else {
-    console.log('An admin user already exists — skipping admin creation.');
+    console.log('A user already exists — skipping first-user creation.');
   }
 
   const existingRules = await tradingRulesRepository.findOne({ where: { id: SINGLETON_ID } });

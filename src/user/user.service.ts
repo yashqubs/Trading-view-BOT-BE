@@ -10,7 +10,6 @@ import { InjectRepository } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
 import { Repository } from 'typeorm';
 import { EmailService } from '../email/email.service';
-import { UserRole } from '../common/enums';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -58,7 +57,6 @@ export class UserService {
     const user = this.userRepository.create({
       name: dto.name,
       email: dto.email,
-      role: dto.role,
       passwordHash: await bcrypt.hash(tempPassword, BCRYPT_COST),
       tempPassword,
       mustChangePassword: true,
@@ -83,17 +81,11 @@ export class UserService {
       throw new BadRequestException('You cannot deactivate your own account');
     }
 
-    const isDemotingFromAdmin = user.role === UserRole.ADMIN && dto.role === UserRole.VIEWER;
-    const isDeactivatingAdmin = user.role === UserRole.ADMIN && dto.active === false;
-    if ((isDemotingFromAdmin && id === currentUserId) || isDeactivatingAdmin) {
-      if (isDemotingFromAdmin && id === currentUserId) {
-        throw new BadRequestException('You cannot remove your own admin role');
-      }
-      await this.assertAnotherActiveAdminExists(id);
+    if (dto.active === false) {
+      await this.assertAnotherActiveUserExists(id);
     }
 
     if (dto.name !== undefined) user.name = dto.name;
-    if (dto.role !== undefined) user.role = dto.role;
     if (dto.active !== undefined) user.active = dto.active;
 
     return this.userRepository.save(user);
@@ -146,9 +138,7 @@ export class UserService {
       throw new BadRequestException('You cannot deactivate your own account');
     }
     const user = await this.findByIdOrThrow(id);
-    if (user.role === UserRole.ADMIN) {
-      await this.assertAnotherActiveAdminExists(id);
-    }
+    await this.assertAnotherActiveUserExists(id);
     user.active = false;
     return this.userRepository.save(user);
   }
@@ -166,16 +156,13 @@ export class UserService {
     return this.userRepository.save(user);
   }
 
-  private async assertAnotherActiveAdminExists(excludingUserId: string): Promise<void> {
-    const activeAdminCount = await this.userRepository.count({
-      where: { role: UserRole.ADMIN, active: true },
-    });
+  private async assertAnotherActiveUserExists(excludingUserId: string): Promise<void> {
+    const activeUserCount = await this.userRepository.count({ where: { active: true } });
     const excludedUser = await this.userRepository.findOne({ where: { id: excludingUserId } });
-    const excludedIsActiveAdmin = excludedUser?.role === UserRole.ADMIN && excludedUser.active;
-    const remaining = excludedIsActiveAdmin ? activeAdminCount - 1 : activeAdminCount;
+    const remaining = excludedUser?.active ? activeUserCount - 1 : activeUserCount;
 
     if (remaining < 1) {
-      throw new BadRequestException('At least one active admin must always exist');
+      throw new BadRequestException('At least one active user must always exist');
     }
   }
 

@@ -20,7 +20,7 @@ The full project documentation lives at `.claude/PROJECT_DOCUMENTATION.md`. Read
 | Trade execution | Section 10 TradeModule, Section 15 endpoints 4, 5, 6, 7 |
 | Database schema | Section 8 — every table, column, type, and all 17 trade statuses |
 | Stats module | Section 12 (Dashboard & Statistics) — what data the frontend needs |
-| User management | Section 6 — endpoints, roles, create flow |
+| User management | Section 6 — endpoints, create flow |
 | Realtime / WebSocket | Section 10 RealtimeModule — internal event → broadcast event mapping |
 | Backup / restore | Section 17, `.claude/scripts/backup-to-s3.sh` |
 | Infrastructure / deployment | Sections 16, 18 |
@@ -63,13 +63,13 @@ Trades involve real money. Correctness and safety are non-negotiable. When in do
 ## Module map
 
 - `auth/` — login, JWT, email-OTP 2FA, brute force lockout, token blacklist
-- `user/` — user CRUD, roles (ADMIN/VIEWER), password reset
+- `user/` — user CRUD, password reset
 - `secrets/` — fetches secrets from AWS Secrets Manager at boot
 - `ig-client/` — IG REST API session + all IG calls (login, search, place, confirm, positions, close)
 - `webhook/` — receives TradingView signals; IP whitelist + secret guards
 - `signal/` — orchestrates the 15-step condition pipeline (plus a duplicate-delivery guard ahead of it)
 - `trading-rules/` — global trading conditions (single row)
-- `mapping/` — stock_mapping CRUD + IG market search (reads open to any role, writes ADMIN-only)
+- `mapping/` — stock_mapping CRUD + IG market search
 - `trade/` — trade execution + trade_log writing
 - `stats/` — aggregated + per-stock statistics
 - `system/` — webhook URL, IG connection status, last-received-signal status
@@ -88,7 +88,7 @@ Trades involve real money. Correctness and safety are non-negotiable. When in do
 7. **All DTOs are validated** with class-validator. No untyped `any` request bodies.
 8. **All DB access via TypeORM repositories** with parameterized queries. Never build raw SQL strings from user input.
 9. **Respect the condition check order** in `signal/` exactly as documented. The first failing condition stops processing and logs the specific status.
-10. **Two roles only** (ADMIN, VIEWER) in v1. Guard every portal endpoint with the correct role.
+10. **No roles.** Every portal endpoint is guarded with `JwtAuthGuard`; every authenticated user has full access (an earlier ADMIN/VIEWER split was deliberately removed — don't reintroduce it).
 
 ## Code style
 
@@ -96,7 +96,7 @@ Trades involve real money. Correctness and safety are non-negotiable. When in do
 - One responsibility per service. Keep controllers thin — logic lives in services.
 - Use dependency injection; never instantiate services manually.
 - Prefer explicit return types on public methods.
-- Use enums for fixed sets (TradeStatus, UserRole, Direction).
+- Use enums for fixed sets (TradeStatus, Direction).
 - Errors: throw NestJS HttpExceptions with appropriate status codes. Never leak internal detail to the client.
 - Async/await everywhere; no floating promises (handle or await).
 
@@ -117,7 +117,7 @@ Trades involve real money. Correctness and safety are non-negotiable. When in do
 - `pnpm lint` — eslint
 - `pnpm audit --audit-level=high` — dependency vulnerability check (must pass before deploy)
 - `pnpm migration:run` — run TypeORM migrations
-- `pnpm seed` — seed first admin user + trading_rules row
+- `pnpm seed` — seed first user + trading_rules row
 - `pnpm clear-db -- --yes` — wipe every row from every table (dev/demo only — hard-blocked when NODE_ENV=production). Run `pnpm seed` after to get back to a working state
 
 ## What to do before considering a task done
@@ -126,7 +126,7 @@ Trades involve real money. Correctness and safety are non-negotiable. When in do
 2. Lint passes (`pnpm lint`)
 3. Tests pass (`pnpm test`)
 4. No secrets in code or logs
-5. New endpoints are role-guarded and DTO-validated
+5. New endpoints are JWT-guarded and DTO-validated
 6. If trade logic changed, the condition order and fail-safe behaviour are intact
 
 ## Don't

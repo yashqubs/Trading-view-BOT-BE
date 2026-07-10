@@ -6,7 +6,6 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
-import { UserRole } from '../../common/enums';
 
 @Entity('users')
 export class User {
@@ -29,9 +28,6 @@ export class User {
   @Exclude()
   @Column({ type: 'varchar', length: 255, nullable: true, name: 'temp_password' })
   tempPassword: string | null;
-
-  @Column({ type: 'varchar', length: 20, default: UserRole.VIEWER })
-  role: UserRole;
 
   @Column({ type: 'boolean', default: true })
   active: boolean;

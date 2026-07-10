@@ -2,10 +2,7 @@ import { Body, Controller, Delete, Get, Param, Patch, Post, Res, UseGuards } fro
 import { Response } from 'express';
 import { AllowPendingSession } from '../common/decorators/allow-pending-session.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
-import { Roles } from '../common/decorators/roles.decorator';
-import { UserRole } from '../common/enums';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
-import { RolesGuard } from '../common/guards/roles.guard';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { SessionService } from '../auth/session/session.service';
 import { ChangePasswordDto } from './dto/change-password.dto';
@@ -15,7 +12,7 @@ import { User } from './entities/user.entity';
 import { CreatedUserResult, ResetPasswordResult, UserService } from './user.service';
 
 @Controller('users')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard)
 export class UserController {
   constructor(
     private readonly userService: UserService,
@@ -23,7 +20,6 @@ export class UserController {
   ) {}
 
   @Get()
-  @Roles(UserRole.ADMIN)
   findAll(): Promise<User[]> {
     return this.userService.findAll();
   }
@@ -49,13 +45,11 @@ export class UserController {
   }
 
   @Post()
-  @Roles(UserRole.ADMIN)
   create(@Body() dto: CreateUserDto): Promise<CreatedUserResult> {
     return this.userService.create(dto);
   }
 
   @Patch(':id')
-  @Roles(UserRole.ADMIN)
   update(
     @Param('id') id: string,
     @Body() dto: UpdateUserDto,
@@ -65,13 +59,11 @@ export class UserController {
   }
 
   @Post(':id/reset-password')
-  @Roles(UserRole.ADMIN)
   resetPassword(@Param('id') id: string): Promise<ResetPasswordResult> {
     return this.userService.resetPassword(id);
   }
 
   @Delete(':id')
-  @Roles(UserRole.ADMIN)
   deactivate(
     @Param('id') id: string,
     @CurrentUser() currentUser: AuthenticatedUser,

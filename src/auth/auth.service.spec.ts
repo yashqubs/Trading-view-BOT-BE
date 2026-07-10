@@ -3,7 +3,6 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { BadRequestException, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
-import { UserRole } from '../common/enums';
 import { EmailService } from '../email/email.service';
 import { User } from '../user/entities/user.entity';
 import { AuthService } from './auth.service';
@@ -31,7 +30,6 @@ describe('AuthService', () => {
       email: 'admin@example.com',
       passwordHash: '',
       tempPassword: null,
-      role: UserRole.ADMIN,
       active: true,
       twoFactorEnabled: false,
       otpCodeHash: null,

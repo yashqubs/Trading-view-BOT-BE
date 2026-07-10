@@ -3,7 +3,6 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
-import { UserRole } from '../common/enums';
 import { EmailService } from '../email/email.service';
 import { User } from './entities/user.entity';
 import { UserService } from './user.service';
@@ -20,7 +19,6 @@ describe('UserService', () => {
       email: 'user@example.com',
       passwordHash: 'old-hash',
       tempPassword: null,
-      role: UserRole.ADMIN,
       active: true,
       twoFactorEnabled: false,
       otpCodeHash: null,
@@ -72,7 +70,6 @@ describe('UserService', () => {
       const { tempPassword } = await service.create({
         name: 'New User',
         email: 'new@example.com',
-        role: UserRole.VIEWER,
       });
 
       const savedUser = repository.save.mock.calls[0][0] as User;

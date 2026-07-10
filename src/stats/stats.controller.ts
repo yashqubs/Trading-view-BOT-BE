@@ -1,8 +1,5 @@
 import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
-import { Roles } from '../common/decorators/roles.decorator';
-import { UserRole } from '../common/enums';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
-import { RolesGuard } from '../common/guards/roles.guard';
 import { DailyActivityQueryDto } from './dto/daily-activity-query.dto';
 import { OpenPositionsQueryDto } from './dto/open-positions-query.dto';
 import { StatsDaysQueryDto } from './dto/stats-days-query.dto';
@@ -18,8 +15,7 @@ import {
 import { StatsService } from './stats.service';
 
 @Controller('stats')
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(UserRole.ADMIN, UserRole.VIEWER)
+@UseGuards(JwtAuthGuard)
 export class StatsController {
   constructor(private readonly statsService: StatsService) {}
 
