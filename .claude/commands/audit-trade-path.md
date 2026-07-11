@@ -19,7 +19,7 @@ Trace and verify:
    - stock daily spend → STOCK_DAILY_LIMIT
    - SELL position check → NO_POSITION
 
-3. **Quantity calculation** (`trade/`) — `investment_amount / signal_price`, rounded to 4dp, guarded against divide-by-zero and against quantities below IG minimum.
+3. **Quantity calculation** (`trade/`) — `investment_amount / signal_price`, rounded to 4dp, guarded against divide-by-zero and against quantities below IG minimum. `investment_amount` must be the *resolved* value (`resolveInvestmentAmount()` — per-stock override or the global `trading_rules.investment_amount` default), never the raw nullable `stock_mapping.investment_amount` column.
 
 4. **IG execution** (`ig-client/`) — place order, then confirm deal, both wrapped in try/catch. On error, log FAILED with IG error code only.
 

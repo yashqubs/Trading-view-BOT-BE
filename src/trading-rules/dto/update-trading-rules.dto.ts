@@ -35,6 +35,13 @@ export class UpdateTradingRulesDto {
   @IsPositive()
   dailyMaxTradeCount?: number;
 
+  // Global default investment per trade. Always required when provided —
+  // unlike the daily caps, there's no "no limit" state for this one.
+  @IsOptional()
+  @IsNumber()
+  @IsPositive()
+  investmentAmount?: number;
+
   @IsOptional()
   @IsInt()
   @Min(1)

@@ -33,6 +33,20 @@ export class TradingRules {
   @Column({ type: 'int', nullable: true, name: 'daily_max_trade_count' })
   dailyMaxTradeCount: number | null;
 
+  // Global default investment per trade — always has a value (unlike the
+  // daily caps, there's no meaningful "no limit" state here). A stock's own
+  // investment_amount (nullable, on stock_mapping) overrides this when set;
+  // when null, the stock inherits this value. See resolveInvestmentAmount().
+  @Column({
+    type: 'decimal',
+    precision: 12,
+    scale: 2,
+    default: 500,
+    name: 'investment_amount',
+    transformer: decimalTransformer,
+  })
+  investmentAmount: number;
+
   @Column({ type: 'int', default: 3, name: 'max_consecutive_failures' })
   maxConsecutiveFailures: number;
 

@@ -34,9 +34,11 @@ export class CreateStockMappingDto {
   @IsBoolean()
   enabled?: boolean;
 
+  // Omit to inherit trading_rules.investment_amount (the global default).
+  @IsOptional()
   @IsNumber()
   @IsPositive()
-  investmentAmount: number;
+  investmentAmount?: number;
 
   @IsOptional()
   @IsNumber()

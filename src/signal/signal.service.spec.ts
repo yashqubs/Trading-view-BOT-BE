@@ -21,6 +21,7 @@ function buildRules(overrides: Partial<TradingRules> = {}): TradingRules {
     allowSell: true,
     dailyMaxTotalInvestment: null,
     dailyMaxTradeCount: null,
+    investmentAmount: 500,
     maxConsecutiveFailures: 3,
     consecutiveFailureCount: 0,
     executionMode: ExecutionMode.MARKET,
@@ -157,6 +158,18 @@ describe('SignalService — condition pipeline', () => {
   it('step 6: stops with DAILY_TOTAL_LIMIT on BUY when the cap would be exceeded', async () => {
     tradingRulesService.get.mockResolvedValue(buildRules({ dailyMaxTotalInvestment: 1500 }));
     tradeService.sumInvestmentSuccessToday.mockResolvedValue(1000);
+
+    const result = await service.processSignal(buildInput({ direction: Direction.BUY }));
+
+    expect(result.status).toBe(TradeStatus.DAILY_TOTAL_LIMIT);
+  });
+
+  it('step 6: a stock with no investmentAmount override is checked against the global default', async () => {
+    tradingRulesService.get.mockResolvedValue(
+      buildRules({ dailyMaxTotalInvestment: 1200, investmentAmount: 500 }),
+    );
+    mappingService.findByTicker.mockResolvedValue(buildMapping({ investmentAmount: null }));
+    tradeService.sumInvestmentSuccessToday.mockResolvedValue(1000); // + 500 global default > 1200 cap
 
     const result = await service.processSignal(buildInput({ direction: Direction.BUY }));
 

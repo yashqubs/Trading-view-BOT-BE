@@ -448,7 +448,7 @@ Local development still uses `.env` for everything with `SECRETS_SOURCE=local` (
 | instrument_name | VARCHAR(255) | e.g. Apple Inc (All Sessions) |
 | instrument_type | VARCHAR(50) | SHARES, COMMODITIES |
 | enabled | BOOLEAN | Default true |
-| investment_amount | DECIMAL(12,2) | GBP per trade |
+| investment_amount | DECIMAL(12,2), Nullable | GBP per trade. NULL = inherit trading_rules.investment_amount (the global default) |
 | max_daily_spend | DECIMAL(12,2), Nullable | Per-stock daily cap |
 | execution_mode | VARCHAR(20), Nullable | MARKET or SIGNAL_PRICE. NULL = inherit trading_rules.execution_mode |
 | created_at | TIMESTAMP | |
@@ -464,6 +464,7 @@ Local development still uses `.env` for everything with `SECRETS_SOURCE=local` (
 | allow_sell | BOOLEAN | true | Global SELL toggle |
 | daily_max_total_investment | DECIMAL(12,2) | NULL | Daily GBP cap |
 | daily_max_trade_count | INTEGER | NULL | Daily trade cap |
+| investment_amount | DECIMAL(12,2) | 500 | Global default GBP per trade. A stock's own investment_amount overrides this when set — see resolveInvestmentAmount() below |
 | max_consecutive_failures | INTEGER | 3 | Auto-pause threshold |
 | consecutive_failure_count | INTEGER | 0 | Running counter |
 | execution_mode | VARCHAR(20) | MARKET | Global default fill mode — MARKET or SIGNAL_PRICE. See "Execution Mode" below |
@@ -533,9 +534,17 @@ Bot master switch, allow buy/sell toggles, daily max total investment, daily max
 
 Investment amount, max daily spend per stock, and a per-stock trading on/off switch (`enabled` — toggleable directly from the Stocks list and the stock's detail page). Each configured individually per stock — writable via `PATCH /mapping/:id`. All mapping endpoints require an authenticated session (see `MappingController`).
 
+### Investment Amount — Global Default vs. Per-Stock Override
+
+Quantity is always `investment_amount / signal_price` (see step 9 above and Section 15 IG endpoints). Which `investment_amount` that is follows the same override pattern as execution mode and slippage below:
+
+**Resolution order:** `stock_mapping.investment_amount` (if not NULL) overrides `trading_rules.investment_amount` (the global default) for that specific stock — resolved by `resolveInvestmentAmount()` (`mapping/utils/resolve-investment-amount.util.ts`), used everywhere a trade amount is needed: quantity sizing (`TradeService.executeTrade`), the daily-total-investment check (step 6), and the per-stock daily-spend check (step 7). The resolved amount is what actually gets logged to `trade_log.investment_amount`, never the raw (possibly NULL) per-stock column. Unlike the daily caps, the global default itself is never NULL — there's no meaningful "no investment amount" state. Set globally on the Conditions page ("Investment" card); overridden per-stock from the stock's own detail/edit page ("Override investment per trade for TICKER").
+
+**Validation:** `max_daily_spend` must exceed whichever investment amount will actually apply — `MappingService` resolves the effective amount (per-stock override, or the current global default) before checking this, both on create and on update.
+
 ### Execution Mode — Market Price vs. Signal Price
 
-Controls the price a trade actually fills at, independent of how quantity is sized (which is always `investment_amount / signal_price`, regardless of this setting).
+Controls the price a trade actually fills at, independent of how quantity is sized.
 
 | Mode | IG order type | Behaviour |
 |---|---|---|

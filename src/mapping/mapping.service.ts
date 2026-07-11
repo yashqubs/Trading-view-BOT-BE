@@ -3,9 +3,11 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { IgClientService } from '../ig-client/ig-client.service';
 import { IgMarket } from '../ig-client/ig-client.types';
+import { TradingRulesService } from '../trading-rules/trading-rules.service';
 import { CreateStockMappingDto } from './dto/create-stock-mapping.dto';
 import { UpdateStockMappingDto } from './dto/update-stock-mapping.dto';
 import { StockMapping } from './entities/stock-mapping.entity';
+import { resolveInvestmentAmount } from './utils/resolve-investment-amount.util';
 
 @Injectable()
 export class MappingService {
@@ -13,6 +15,7 @@ export class MappingService {
     @InjectRepository(StockMapping)
     private readonly stockMappingRepository: Repository<StockMapping>,
     private readonly igClientService: IgClientService,
+    private readonly tradingRulesService: TradingRulesService,
   ) {}
 
   findAll(): Promise<StockMapping[]> {
@@ -53,8 +56,17 @@ export class MappingService {
     if (existing) {
       throw new BadRequestException('This ticker is already mapped');
     }
-    if (dto.maxDailySpend != null && dto.maxDailySpend <= dto.investmentAmount) {
-      throw new BadRequestException('Max daily spend must be higher than the investment per trade');
+    if (dto.maxDailySpend != null) {
+      // Resolved against the current global default when this stock doesn't
+      // set its own — the same "must exceed what you'll actually invest"
+      // safety check either way.
+      const rules = await this.tradingRulesService.get();
+      const effectiveAmount = dto.investmentAmount ?? rules.investmentAmount;
+      if (dto.maxDailySpend <= effectiveAmount) {
+        throw new BadRequestException(
+          'Max daily spend must be higher than the investment per trade',
+        );
+      }
     }
 
     const mapping = this.stockMappingRepository.create({
@@ -63,7 +75,7 @@ export class MappingService {
       instrumentName: dto.instrumentName,
       instrumentType: dto.instrumentType,
       enabled: dto.enabled ?? true,
-      investmentAmount: dto.investmentAmount,
+      investmentAmount: dto.investmentAmount ?? null,
       maxDailySpend: dto.maxDailySpend ?? null,
       executionMode: dto.executionMode ?? null,
       maxSlippagePercent: dto.maxSlippagePercent ?? null,
@@ -94,9 +106,18 @@ export class MappingService {
 
     // Checked against the merged result (not just the fields in this dto) so
     // a change to either investmentAmount or maxDailySpend alone still
-    // catches a mapping left in an invalid state by the other field.
-    if (mapping.maxDailySpend != null && mapping.maxDailySpend <= mapping.investmentAmount) {
-      throw new BadRequestException('Max daily spend must be higher than the investment per trade');
+    // catches a mapping left in an invalid state by the other field. Resolved
+    // against the current global default when this stock doesn't set its own.
+    if (mapping.maxDailySpend != null) {
+      const effectiveAmount = resolveInvestmentAmount(
+        mapping,
+        await this.tradingRulesService.get(),
+      );
+      if (mapping.maxDailySpend <= effectiveAmount) {
+        throw new BadRequestException(
+          'Max daily spend must be higher than the investment per trade',
+        );
+      }
     }
 
     await this.stockMappingRepository.save(mapping);

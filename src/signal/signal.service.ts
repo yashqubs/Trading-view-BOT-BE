@@ -3,6 +3,7 @@ import { Direction, TradeStatus } from '../common/enums';
 import { IgClientService } from '../ig-client/ig-client.service';
 import { IgPosition } from '../ig-client/ig-client.types';
 import { MappingService } from '../mapping/mapping.service';
+import { resolveInvestmentAmount } from '../mapping/utils/resolve-investment-amount.util';
 import { TradeLog } from '../trade/entities/trade-log.entity';
 import { SignalInput } from '../trade/interfaces/signal-input.interface';
 import { TradeService } from '../trade/trade.service';
@@ -105,7 +106,7 @@ export class SignalService {
       // 6. daily total investment
       if (rules.dailyMaxTotalInvestment !== null) {
         const investedToday = await this.tradeService.sumInvestmentSuccessToday();
-        const wouldBeInvested = investedToday + Number(mapping.investmentAmount);
+        const wouldBeInvested = investedToday + resolveInvestmentAmount(mapping, rules);
         if (wouldBeInvested > Number(rules.dailyMaxTotalInvestment)) {
           return this.tradeService.logSkip(input, TradeStatus.DAILY_TOTAL_LIMIT, mapping.igEpic);
         }
@@ -116,7 +117,7 @@ export class SignalService {
         const investedTodayForStock = await this.tradeService.sumInvestmentSuccessToday(
           mapping.tvTicker,
         );
-        const wouldBeInvested = investedTodayForStock + Number(mapping.investmentAmount);
+        const wouldBeInvested = investedTodayForStock + resolveInvestmentAmount(mapping, rules);
         if (wouldBeInvested > Number(mapping.maxDailySpend)) {
           return this.tradeService.logSkip(input, TradeStatus.STOCK_DAILY_LIMIT, mapping.igEpic);
         }

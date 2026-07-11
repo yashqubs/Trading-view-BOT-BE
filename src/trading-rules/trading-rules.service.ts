@@ -40,6 +40,7 @@ export class TradingRulesService {
       rules.dailyMaxTotalInvestment = dto.dailyMaxTotalInvestment;
     }
     if (dto.dailyMaxTradeCount !== undefined) rules.dailyMaxTradeCount = dto.dailyMaxTradeCount;
+    if (dto.investmentAmount !== undefined) rules.investmentAmount = dto.investmentAmount;
     if (dto.maxConsecutiveFailures !== undefined) {
       rules.maxConsecutiveFailures = dto.maxConsecutiveFailures;
     }

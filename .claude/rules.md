@@ -27,7 +27,7 @@ These rules supplement CLAUDE.md. They are enforced in review.
 - The signal pipeline checks conditions in the exact documented order. Do not reorder.
 - Each condition that fails writes a trade_log row with the specific status and stops.
 - SELL always checks `getOpenPositions()` first. No position → skip with NO_POSITION.
-- Quantity = `investment_amount / signal_price`, `.toFixed(4)`. Guard against divide-by-zero.
+- Quantity = `investment_amount / signal_price`, `.toFixed(4)`. Guard against divide-by-zero. `investment_amount` comes from `resolveInvestmentAmount(mapping, rules)` — a stock's own override, falling back to the global `trading_rules.investment_amount` when null.
 - After a FAILED trade, increment `consecutive_failure_count`. If it reaches `max_consecutive_failures`, set `bot_enabled = false` and log AUTO_PAUSED.
 - Every IG call is wrapped in try/catch. On error, log FAILED with the IG error code (not the full error object).
 

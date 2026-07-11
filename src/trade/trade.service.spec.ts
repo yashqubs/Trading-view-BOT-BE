@@ -128,6 +128,27 @@ describe('TradeService', () => {
       expect(tradingRulesService.resetFailureCount).toHaveBeenCalled();
     });
 
+    it('sizes the order off the global default investment when the stock has no override', async () => {
+      const mappingNoOverride = { ...mapping, investmentAmount: null } as StockMapping;
+      const rulesWithDefault = { ...rules, investmentAmount: 250 } as TradingRules;
+      igClientService.placeOrder.mockResolvedValue({ dealReference: 'REF-1c' });
+      igClientService.confirmDeal.mockResolvedValue({
+        dealId: 'DEAL-1c',
+        dealStatus: 'ACCEPTED',
+        status: 'OPEN',
+        reason: null,
+        level: 101.25,
+      });
+
+      const result = await service.executeTrade(input, mappingNoOverride, null, rulesWithDefault);
+
+      // quantity = 250 / 100 (signal price) = 2.5
+      expect(igClientService.placeOrder).toHaveBeenCalledWith(
+        expect.objectContaining({ size: 2.5 }),
+      );
+      expect(result.investmentAmount).toBe(250);
+    });
+
     it('places a LIMIT order at the signal price when the global execution mode is SIGNAL_PRICE', async () => {
       igClientService.placeOrder.mockResolvedValue({ dealReference: 'REF-1b' });
       igClientService.confirmDeal.mockResolvedValue({

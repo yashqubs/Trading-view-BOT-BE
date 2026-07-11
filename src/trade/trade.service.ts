@@ -7,6 +7,7 @@ import { IgApiException } from '../ig-client/ig-api.exception';
 import { IgClientService } from '../ig-client/ig-client.service';
 import { IgPosition } from '../ig-client/ig-client.types';
 import { StockMapping } from '../mapping/entities/stock-mapping.entity';
+import { resolveInvestmentAmount } from '../mapping/utils/resolve-investment-amount.util';
 import { TradingRules } from '../trading-rules/entities/trading-rules.entity';
 import { TradingRulesService } from '../trading-rules/trading-rules.service';
 import { TradeLogQueryDto } from './dto/trade-log-query.dto';
@@ -74,7 +75,8 @@ export class TradeService {
     existingPosition: IgPosition | null,
     rules: TradingRules,
   ): Promise<TradeLog> {
-    const quantity = calculateQuantity(Number(mapping.investmentAmount), input.signalPrice);
+    const investmentAmount = resolveInvestmentAmount(mapping, rules);
+    const quantity = calculateQuantity(investmentAmount, input.signalPrice);
     const executionMode = mapping.executionMode ?? rules.executionMode;
     const maxSlippagePercent = Number(mapping.maxSlippagePercent ?? rules.maxSlippagePercent);
     const igOrderParams =
@@ -90,7 +92,7 @@ export class TradeService {
       igEpic: mapping.igEpic,
       direction: input.direction,
       signalPrice: input.signalPrice,
-      investmentAmount: mapping.investmentAmount,
+      investmentAmount,
       quantity,
       signalReceivedAt: input.signalReceivedAt,
     };

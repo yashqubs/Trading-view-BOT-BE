@@ -28,14 +28,17 @@ export class StockMapping {
   @Column({ type: 'boolean', default: true })
   enabled: boolean;
 
+  // Null = inherit trading_rules.investment_amount (the global default). Set
+  // to override just this stock. See resolveInvestmentAmount().
   @Column({
     type: 'decimal',
     precision: 12,
     scale: 2,
+    nullable: true,
     name: 'investment_amount',
     transformer: decimalTransformer,
   })
-  investmentAmount: number;
+  investmentAmount: number | null;
 
   @Column({
     type: 'decimal',

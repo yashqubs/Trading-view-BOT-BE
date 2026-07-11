@@ -39,10 +39,12 @@ export class UpdateStockMappingDto {
   @IsBoolean()
   enabled?: boolean;
 
+  // Optional AND nullable — the frontend sends `null` explicitly to revert
+  // back to inheriting trading_rules.investment_amount (the global default).
   @IsOptional()
   @IsNumber()
   @IsPositive()
-  investmentAmount?: number;
+  investmentAmount?: number | null;
 
   // Optional AND nullable — the frontend sends `null` explicitly to clear
   // the limit back to "no limit" (EditStockModal / StockConditionsCard),
