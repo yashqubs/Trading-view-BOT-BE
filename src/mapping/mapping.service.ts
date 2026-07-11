@@ -19,7 +19,7 @@ export class MappingService {
   ) {}
 
   findAll(): Promise<StockMapping[]> {
-    return this.stockMappingRepository.find({ order: { tvTicker: 'ASC' } });
+    return this.stockMappingRepository.find({ order: { createdAt: 'DESC' } });
   }
 
   async findByIdOrThrow(id: number): Promise<StockMapping> {

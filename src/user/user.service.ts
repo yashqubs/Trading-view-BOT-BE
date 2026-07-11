@@ -36,7 +36,7 @@ export class UserService {
   ) {}
 
   findAll(): Promise<User[]> {
-    return this.userRepository.find({ order: { createdAt: 'ASC' } });
+    return this.userRepository.find({ order: { createdAt: 'DESC' } });
   }
 
   async findByIdOrThrow(id: string): Promise<User> {
