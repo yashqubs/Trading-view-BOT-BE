@@ -11,7 +11,6 @@ import { DatabaseModule } from './database/database.module';
 import { HealthModule } from './health/health.module';
 import { IgClientModule } from './ig-client/ig-client.module';
 import { MappingModule } from './mapping/mapping.module';
-import { MarketsModule } from './markets/markets.module';
 import { RealtimeModule } from './realtime/realtime.module';
 import { SchedulerModule } from './scheduler/scheduler.module';
 import { SecretsModule } from './secrets/secrets.module';
@@ -36,7 +35,6 @@ import { WebhookModule } from './webhook/webhook.module';
     AuthModule,
     UserModule,
     IgClientModule,
-    MarketsModule,
     MappingModule,
     TradingRulesModule,
     TradeModule,

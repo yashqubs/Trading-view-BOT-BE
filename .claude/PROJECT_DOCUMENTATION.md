@@ -59,13 +59,12 @@ When a TradingView indicator fires a green (buy) or red (sell) signal, the bot a
 5.  Bot parses signal — ticker, direction, price
 6.  Bot checks global trading rules (enabled? daily limits?)
 7.  Bot looks up ticker in mapping table → IG Epic code
-8.  Bot checks per-stock conditions (enabled? cool-down? caps?)
-9.  Bot checks if US market is open
-10. Bot calculates quantity = investment amount ÷ signal price
-11. Bot calls IG REST API to place the trade
-12. IG executes and returns deal reference
-13. Bot confirms deal and logs result to database
-14. Admin portal updates — statistics, charts, history
+8.  Bot checks per-stock conditions (enabled? daily spend cap?)
+9.  Bot calculates quantity = investment amount ÷ signal price
+10. Bot calls IG REST API to place the trade
+11. IG executes and returns deal reference
+12. Bot confirms deal and logs result to database
+13. Admin portal updates — statistics, charts, history
 ```
 
 ---
@@ -169,7 +168,7 @@ When a TradingView indicator fires a green (buy) or red (sell) signal, the bot a
 | # | Question | Recommended |
 |---|---|---|
 | 10 | SELL signal with no open position? | Skip, log NO_POSITION |
-| 11 | Signal when market closed? | Skip, log MARKET_CLOSED |
+| 11 | Signal when market closed? | No check — the markets/trading-hours feature was removed. The order goes to IG; if IG rejects it, it's logged FAILED |
 | 12 | Stop-loss orders? | No for v1 — manual on IG |
 
 ---
@@ -284,7 +283,6 @@ How it works:
 | Global kill switch | One portal toggle stops all trading |
 | Daily total spend cap | Stops BUYs at daily GBP limit |
 | Daily trade count cap | Stops after max trades/day |
-| Per-stock cool-down | Prevents rapid repeat trades |
 | Consecutive failure auto-pause | Pauses bot after N failures |
 | SELL position check | Verifies open position before SELL |
 
@@ -452,8 +450,6 @@ Local development still uses `.env` for everything with `SECRETS_SOURCE=local` (
 | enabled | BOOLEAN | Default true |
 | investment_amount | DECIMAL(12,2) | GBP per trade |
 | max_daily_spend | DECIMAL(12,2), Nullable | Per-stock daily cap |
-| cool_down_minutes | INTEGER, Nullable | Min gap between trades |
-| max_open_positions | INTEGER | Default 1 |
 | execution_mode | VARCHAR(20), Nullable | MARKET or SIGNAL_PRICE. NULL = inherit trading_rules.execution_mode |
 | created_at | TIMESTAMP | |
 | updated_at | TIMESTAMP | |
@@ -468,12 +464,8 @@ Local development still uses `.env` for everything with `SECRETS_SOURCE=local` (
 | allow_sell | BOOLEAN | true | Global SELL toggle |
 | daily_max_total_investment | DECIMAL(12,2) | NULL | Daily GBP cap |
 | daily_max_trade_count | INTEGER | NULL | Daily trade cap |
-| max_open_positions_global | INTEGER | NULL | Portfolio cap |
 | max_consecutive_failures | INTEGER | 3 | Auto-pause threshold |
 | consecutive_failure_count | INTEGER | 0 | Running counter |
-| trade_start_time_utc | TIME | 14:30 | NYSE open |
-| trade_end_time_utc | TIME | 21:00 | NYSE close |
-| trade_weekdays_only | BOOLEAN | true | No weekends |
 | execution_mode | VARCHAR(20) | MARKET | Global default fill mode — MARKET or SIGNAL_PRICE. See "Execution Mode" below |
 | updated_at | TIMESTAMP | Auto | |
 | updated_by | UUID | NULL | Audit |
@@ -503,7 +495,7 @@ Local development still uses `.env` for everything with `SECRETS_SOURCE=local` (
 
 SUCCESS, FAILED, MARKET_CLOSED, NOT_MAPPED, DISABLED, NO_POSITION, BOT_PAUSED, BUY_DISABLED, SELL_DISABLED, DAILY_TOTAL_LIMIT, DAILY_TRADE_LIMIT, GLOBAL_POSITION_LIMIT, STOCK_DAILY_LIMIT, COOL_DOWN, MAX_POSITIONS_STOCK, AUTO_PAUSED, DUPLICATE_SIGNAL
 
-> 17 statuses total. `DUPLICATE_SIGNAL` comes from the resend guard in `signal.service.ts` (see Section 9) — every webhook delivery writes a `trade_log` row, including duplicates.
+> 17 statuses total. `DUPLICATE_SIGNAL` comes from the resend guard in `signal.service.ts` (see Section 9) — every webhook delivery writes a `trade_log` row, including duplicates. `MARKET_CLOSED`, `GLOBAL_POSITION_LIMIT`, `COOL_DOWN`, and `MAX_POSITIONS_STOCK` are legacy-only: nothing writes them since the markets/trading-hours feature and the position-cap/cool-down throttles were removed, but historical rows keep them.
 
 > No `closing_price` / `profit_loss` / `profit_loss_pct` columns. A "realized P&L" computed from the TradingView signal price on the closing trade existed briefly and was removed app-wide (frontend, `TradeService`, and a migration dropping the columns) — see Section 19 Limitation 1 for why.
 
@@ -515,33 +507,31 @@ SUCCESS, FAILED, MARKET_CLOSED, NOT_MAPPED, DISABLED, NO_POSITION, BOT_PAUSED, B
 
 When a signal arrives, conditions are checked in sequence. The first failure stops processing.
 
-> Ahead of step 1, `SignalService.isDuplicateSignal()` runs a technical (non-business) check: if the same ticker + direction + price arrived within the last 20 seconds, the signal is logged `DUPLICATE_SIGNAL` and skipped. This exists because TradingView can resend the same webhook on delivery retry, and it's in-memory only (safe because the app runs as a single PM2 fork instance — see `ecosystem.config.js`). It is not one of the 15 numbered steps below.
+> Ahead of step 1, `SignalService.isDuplicateSignal()` runs a technical (non-business) check: if the same ticker + direction + price arrived within the last 20 seconds, the signal is logged `DUPLICATE_SIGNAL` and skipped. This exists because TradingView can resend the same webhook on delivery retry, and it's in-memory only (safe because the app runs as a single PM2 fork instance — see `ecosystem.config.js`). It is not one of the 11 numbered steps below.
+
+> There is no market-hours check — the markets/trading-hours feature was deliberately removed. Signals are processed whenever they arrive; an out-of-hours order goes to IG and is logged FAILED if IG rejects it. The global position cap, per-stock cool-down, and per-stock max-positions throttles were also deliberately removed — don't reintroduce them without discussing first.
 
 ```
 1.  bot_enabled = true?            → NO → BOT_PAUSED
 2.  direction allowed?             → NO → BUY_DISABLED / SELL_DISABLED
 3.  ticker in mapping?             → NO → NOT_MAPPED
 4.  stock enabled?                 → NO → DISABLED
-5.  market open?                   → NO → MARKET_CLOSED
-6.  daily trade count OK?          → NO → DAILY_TRADE_LIMIT
-7.  daily total investment OK?     → NO → DAILY_TOTAL_LIMIT
-8.  global positions OK?           → NO → GLOBAL_POSITION_LIMIT
-9.  stock cool-down elapsed?       → NO → COOL_DOWN
-10. stock daily spend OK?          → NO → STOCK_DAILY_LIMIT
-11. stock max positions OK?        → NO → MAX_POSITIONS_STOCK
-12. SELL has open position?        → NO → NO_POSITION
-13. calculate quantity, execute
-14. log SUCCESS or FAILED
-15. if FAILED: increment failure counter; auto-pause if threshold hit
+5.  daily trade count OK?          → NO → DAILY_TRADE_LIMIT
+6.  daily total investment OK?     → NO → DAILY_TOTAL_LIMIT
+7.  stock daily spend OK?          → NO → STOCK_DAILY_LIMIT
+8.  SELL has open position?        → NO → NO_POSITION
+9.  calculate quantity, execute
+10. log SUCCESS or FAILED
+11. if FAILED: increment failure counter; auto-pause if threshold hit
 ```
 
 ### Global Conditions (trading_rules)
 
-Bot master switch, allow buy/sell toggles, daily max total investment, daily max trade count, global max open positions, consecutive failure auto-pause, custom trading hours. Full descriptions as documented — each configurable from the Conditions page.
+Bot master switch, allow buy/sell toggles, daily max total investment, daily max trade count, consecutive failure auto-pause. Full descriptions as documented — each configurable from the Conditions page.
 
 ### Per-Stock Conditions (stock_mapping)
 
-Investment amount, max daily spend per stock, cool-down minutes, max open positions per stock, enabled toggle. Each configured individually per stock — writable via `PATCH /mapping/:id`, from either the Stocks list edit modal or the stock's own detail page in the portal. All mapping endpoints require an authenticated session (see `MappingController`).
+Investment amount, max daily spend per stock, and a per-stock trading on/off switch (`enabled` — toggleable directly from the Stocks list and the stock's detail page). Each configured individually per stock — writable via `PATCH /mapping/:id`. All mapping endpoints require an authenticated session (see `MappingController`).
 
 ### Execution Mode — Market Price vs. Signal Price
 
@@ -653,7 +643,6 @@ Internal service. Methods: login, refreshSession, searchMarkets, getOpenPosition
 | Dashboard | / | Global stats + charts |
 | Stocks | /stocks | Per-stock config table |
 | Stock Detail | /stocks/:ticker | Single-stock statistics + charts + per-stock trading conditions |
-| Markets | /markets | Search/manage the IG tradeable-market list |
 | Open Positions | /positions | Currently open positions, live from IG |
 | Trades | /trades | Full trade history with filters + CSV export |
 | Conditions | /conditions | Global trading rules |
@@ -1011,7 +1000,7 @@ The backend deploy job runs migrations (`pnpm migration:run`) automatically as p
 
 ### Phase 5 — Demo Testing
 - [ ] Verify webhook arrives, trade executes on IG demo, appears in stats
-- [ ] Test each condition (BOT_PAUSED, COOL_DOWN, limits, MARKET_CLOSED)
+- [ ] Test each condition (BOT_PAUSED, daily limits)
 - [ ] Test 2FA login, user creation, per-stock stats page
 
 ### Phase 6 — Go Live

@@ -33,9 +33,6 @@ export class TradingRules {
   @Column({ type: 'int', nullable: true, name: 'daily_max_trade_count' })
   dailyMaxTradeCount: number | null;
 
-  @Column({ type: 'int', nullable: true, name: 'max_open_positions_global' })
-  maxOpenPositionsGlobal: number | null;
-
   @Column({ type: 'int', default: 3, name: 'max_consecutive_failures' })
   maxConsecutiveFailures: number;
 

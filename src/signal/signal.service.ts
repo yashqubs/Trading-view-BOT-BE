@@ -8,22 +8,20 @@ import { SignalInput } from '../trade/interfaces/signal-input.interface';
 import { TradeService } from '../trade/trade.service';
 import { TradingRulesService } from '../trading-rules/trading-rules.service';
 import { InFlightSignalTracker } from './in-flight-signal-tracker.service';
-import { isMarketOpen } from './utils/market-hours.util';
 
 /**
- * Orchestrates the documented 15-step condition pipeline
+ * Orchestrates the documented 11-step condition pipeline
  * (PROJECT_DOCUMENTATION.md Section 9). Order must never change.
  *
- * Design note on steps 6,7,8,9,10,11 (the throttle checks — daily trade
- * count, daily investment caps, global/per-stock position caps, cool-down):
- * these exist to limit how much NEW exposure the bot opens. They are applied
- * to BUY signals only. A SELL signal is always a request to close existing
- * exposure, and CLAUDE.md's mandatory rule is that the SELL position check
- * (step 12) is "not optional" — blocking a close because a daily cap or
- * cool-down was hit would leave unwanted exposure open, which is the unsafe
- * outcome the throttles are meant to prevent in the first place. SELL signals
- * therefore go: 1-5 (kill switch / mapping / market hours guards, which are
- * legitimate even for closes) straight to 12 (position check) then execute.
+ * Design note on steps 5,6,7 (the throttle checks — daily trade count and
+ * daily investment caps): these exist to limit how much NEW exposure the bot
+ * opens. They are applied to BUY signals only. A SELL signal is always a
+ * request to close existing exposure, and CLAUDE.md's mandatory rule is that
+ * the SELL position check (step 8) is "not optional" — blocking a close
+ * because a daily cap was hit would leave unwanted exposure open, which is
+ * the unsafe outcome the throttles are meant to prevent in the first place.
+ * SELL signals therefore go: 1-4 (kill switch / mapping guards, which are
+ * legitimate even for closes) straight to 8 (position check) then execute.
  */
 // TradingView can resend the exact same webhook alert on delivery retry. The
 // payload carries no alert ID or TradingView-supplied timestamp to key off
@@ -63,7 +61,7 @@ export class SignalService {
   }
 
   private async runPipeline(input: SignalInput): Promise<TradeLog> {
-    // Not one of the documented 15 pipeline steps — a technical safeguard
+    // Not one of the documented 11 pipeline steps — a technical safeguard
     // against re-processing the same webhook delivery, checked ahead of them.
     if (this.isDuplicateSignal(input)) {
       return this.tradeService.logSkip(input, TradeStatus.DUPLICATE_SIGNAL);
@@ -95,13 +93,8 @@ export class SignalService {
       return this.tradeService.logSkip(input, TradeStatus.DISABLED, mapping.igEpic);
     }
 
-    // 5. market open (the stock's OWN assigned market, not a global window)
-    if (!isMarketOpen(mapping.market, input.signalReceivedAt)) {
-      return this.tradeService.logSkip(input, TradeStatus.MARKET_CLOSED, mapping.igEpic);
-    }
-
     if (input.direction === Direction.BUY) {
-      // 6. daily trade count
+      // 5. daily trade count
       if (rules.dailyMaxTradeCount !== null) {
         const tradeCountToday = await this.tradeService.countSuccessToday();
         if (tradeCountToday >= rules.dailyMaxTradeCount) {
@@ -109,7 +102,7 @@ export class SignalService {
         }
       }
 
-      // 7. daily total investment
+      // 6. daily total investment
       if (rules.dailyMaxTotalInvestment !== null) {
         const investedToday = await this.tradeService.sumInvestmentSuccessToday();
         const wouldBeInvested = investedToday + Number(mapping.investmentAmount);
@@ -118,35 +111,7 @@ export class SignalService {
         }
       }
 
-      // 8 & 11 both need the current open positions — step 11 runs
-      // unconditionally for every BUY, so fetching once here (rather than
-      // once per check) never does an unnecessary IG call.
-      const openPositions = await this.igClientService.getOpenPositions();
-
-      // 8. global open positions
-      if (rules.maxOpenPositionsGlobal !== null) {
-        if (openPositions.length >= rules.maxOpenPositionsGlobal) {
-          return this.tradeService.logSkip(
-            input,
-            TradeStatus.GLOBAL_POSITION_LIMIT,
-            mapping.igEpic,
-          );
-        }
-      }
-
-      // 9. stock cool-down
-      if (mapping.coolDownMinutes !== null) {
-        const lastTrade = await this.tradeService.getLastSuccessfulTrade(mapping.tvTicker);
-        if (lastTrade) {
-          const elapsedMinutes =
-            (input.signalReceivedAt.getTime() - lastTrade.createdAt.getTime()) / 60_000;
-          if (elapsedMinutes < mapping.coolDownMinutes) {
-            return this.tradeService.logSkip(input, TradeStatus.COOL_DOWN, mapping.igEpic);
-          }
-        }
-      }
-
-      // 10. stock daily spend
+      // 7. stock daily spend
       if (mapping.maxDailySpend !== null) {
         const investedTodayForStock = await this.tradeService.sumInvestmentSuccessToday(
           mapping.tvTicker,
@@ -156,17 +121,9 @@ export class SignalService {
           return this.tradeService.logSkip(input, TradeStatus.STOCK_DAILY_LIMIT, mapping.igEpic);
         }
       }
-
-      // 11. stock max open positions
-      const stockPositionCount = openPositions.filter(
-        (position) => position.epic === mapping.igEpic,
-      ).length;
-      if (stockPositionCount >= mapping.maxOpenPositions) {
-        return this.tradeService.logSkip(input, TradeStatus.MAX_POSITIONS_STOCK, mapping.igEpic);
-      }
     }
 
-    // 12. SELL must have an open position
+    // 8. SELL must have an open position
     let existingPosition: IgPosition | null = null;
     if (input.direction === Direction.SELL) {
       const positions = await this.igClientService.getOpenPositions();
@@ -176,7 +133,7 @@ export class SignalService {
       }
     }
 
-    // 13-15. calculate quantity, execute on IG, log SUCCESS/FAILED, handle failure counter
+    // 9-11. calculate quantity, execute on IG, log SUCCESS/FAILED, handle failure counter
     this.logger.log(`Executing ${input.direction} for ${input.tvTicker} @ ${input.signalPrice}`);
     return this.tradeService.executeTrade(input, mapping, existingPosition, rules);
   }

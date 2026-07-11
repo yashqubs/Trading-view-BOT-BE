@@ -271,13 +271,6 @@ export class TradeService {
     return Number(result?.total ?? 0);
   }
 
-  async getLastSuccessfulTrade(tvTicker: string): Promise<TradeLog | null> {
-    return this.tradeLogRepository.findOne({
-      where: { tvTicker, status: TradeStatus.SUCCESS },
-      order: { createdAt: 'DESC' },
-    });
-  }
-
   // Every webhook delivery writes a trade_log row via logSkip() or
   // executeTrade() — including duplicates and every skip reason — so the
   // most recent signalReceivedAt here is exactly "when did TradingView last

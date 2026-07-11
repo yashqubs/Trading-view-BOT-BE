@@ -2,7 +2,6 @@ import { Transform } from 'class-transformer';
 import {
   IsBoolean,
   IsEnum,
-  IsInt,
   IsNumber,
   IsOptional,
   IsPositive,
@@ -25,12 +24,6 @@ export class CreateStockMappingDto {
   @IsString()
   igEpic: string;
 
-  // Which exchange/session this stock trades on — required, no default,
-  // since there's no safe global fallback for real-world trading hours.
-  @IsInt()
-  @IsPositive()
-  marketId: number;
-
   @IsString()
   instrumentName: string;
 
@@ -49,16 +42,6 @@ export class CreateStockMappingDto {
   @IsNumber()
   @IsPositive()
   maxDailySpend?: number;
-
-  @IsOptional()
-  @IsInt()
-  @Min(0)
-  coolDownMinutes?: number;
-
-  @IsOptional()
-  @IsInt()
-  @IsPositive()
-  maxOpenPositions?: number;
 
   // Omit to inherit trading_rules.execution_mode (the global default).
   @IsOptional()

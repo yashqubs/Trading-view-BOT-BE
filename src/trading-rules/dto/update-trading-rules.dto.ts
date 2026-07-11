@@ -37,11 +37,6 @@ export class UpdateTradingRulesDto {
 
   @IsOptional()
   @IsInt()
-  @IsPositive()
-  maxOpenPositionsGlobal?: number;
-
-  @IsOptional()
-  @IsInt()
   @Min(1)
   maxConsecutiveFailures?: number;
 

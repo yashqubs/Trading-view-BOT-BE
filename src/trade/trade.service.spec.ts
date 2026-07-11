@@ -39,8 +39,6 @@ describe('TradeService', () => {
     enabled: true,
     investmentAmount: 1000,
     maxDailySpend: null,
-    coolDownMinutes: null,
-    maxOpenPositions: 1,
     executionMode: null,
     maxSlippagePercent: null,
     createdAt: new Date(),

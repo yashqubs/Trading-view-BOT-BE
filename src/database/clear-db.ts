@@ -1,13 +1,12 @@
 import { ensureDbCredentials } from './load-db-credentials';
 
 // Every table this app owns. Order doesn't matter for TRUNCATE — CASCADE
-// handles the real FKs (refresh_tokens -> users, stock_mapping -> markets) —
-// but this list itself matters: a new entity/migration needs a matching line
-// here or it silently survives a "clear".
+// handles the real FKs (refresh_tokens -> users) — but this list itself
+// matters: a new entity/migration needs a matching line here or it silently
+// survives a "clear".
 const TABLES = [
   'trade_log',
   'stock_mapping',
-  'markets',
   'trading_rules',
   'token_blacklist',
   'refresh_tokens',

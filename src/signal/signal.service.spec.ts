@@ -1,7 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { Direction, ExecutionMode, TradeStatus } from '../common/enums';
 import { IgClientService } from '../ig-client/ig-client.service';
-import { Market } from '../markets/entities/market.entity';
 import { StockMapping } from '../mapping/entities/stock-mapping.entity';
 import { MappingService } from '../mapping/mapping.service';
 import { SignalInput } from '../trade/interfaces/signal-input.interface';
@@ -11,7 +10,7 @@ import { TradingRulesService } from '../trading-rules/trading-rules.service';
 import { InFlightSignalTracker } from './in-flight-signal-tracker.service';
 import { SignalService } from './signal.service';
 
-const IN_MARKET_HOURS = new Date('2026-06-24T15:00:00Z'); // Wednesday, inside 14:30-21:00 UTC
+const SIGNAL_TIME = new Date('2026-06-24T15:00:00Z');
 
 function buildRules(overrides: Partial<TradingRules> = {}): TradingRules {
   return {
@@ -22,27 +21,12 @@ function buildRules(overrides: Partial<TradingRules> = {}): TradingRules {
     allowSell: true,
     dailyMaxTotalInvestment: null,
     dailyMaxTradeCount: null,
-    maxOpenPositionsGlobal: null,
     maxConsecutiveFailures: 3,
     consecutiveFailureCount: 0,
     executionMode: ExecutionMode.MARKET,
     maxSlippagePercent: 0,
     updatedAt: new Date(),
     updatedBy: null,
-    ...overrides,
-  };
-}
-
-function buildMarket(overrides: Partial<Market> = {}): Market {
-  return {
-    id: 1,
-    name: 'Test Market',
-    timezone: 'UTC',
-    openTime: '14:30',
-    closeTime: '21:00',
-    weekdaysOnly: true,
-    createdAt: new Date(),
-    updatedAt: new Date(),
     ...overrides,
   };
 }
@@ -55,12 +39,8 @@ function buildMapping(overrides: Partial<StockMapping> = {}): StockMapping {
     instrumentName: 'Apple Inc',
     instrumentType: 'SHARES',
     enabled: true,
-    marketId: 1,
-    market: buildMarket(),
     investmentAmount: 1000,
     maxDailySpend: null,
-    coolDownMinutes: null,
-    maxOpenPositions: 1,
     executionMode: null,
     maxSlippagePercent: null,
     createdAt: new Date(),
@@ -74,7 +54,7 @@ function buildInput(overrides: Partial<SignalInput> = {}): SignalInput {
     tvTicker: 'AAPL',
     direction: Direction.BUY,
     signalPrice: 100,
-    signalReceivedAt: IN_MARKET_HOURS,
+    signalReceivedAt: SIGNAL_TIME,
     ...overrides,
   };
 }
@@ -101,7 +81,6 @@ describe('SignalService — condition pipeline', () => {
             ),
             countSuccessToday: jest.fn().mockResolvedValue(0),
             sumInvestmentSuccessToday: jest.fn().mockResolvedValue(0),
-            getLastSuccessfulTrade: jest.fn().mockResolvedValue(null),
           },
         },
         {
@@ -166,40 +145,7 @@ describe('SignalService — condition pipeline', () => {
     expect(result.status).toBe(TradeStatus.DISABLED);
   });
 
-  it('step 5: stops with MARKET_CLOSED outside trading hours', async () => {
-    const result = await service.processSignal(
-      buildInput({ signalReceivedAt: new Date('2026-06-24T03:00:00Z') }),
-    );
-
-    expect(result.status).toBe(TradeStatus.MARKET_CLOSED);
-  });
-
-  it('step 5: evaluates each stock against its OWN assigned market, not a shared global window', async () => {
-    // Same instant (IN_MARKET_HOURS = 2026-06-24T15:00:00Z): open for a stock
-    // on the default UTC 14:30-21:00 market, closed for one on a market whose
-    // hours don't cover that instant at all.
-    const openMapping = buildMapping({ tvTicker: 'AAPL' });
-    const closedMapping = buildMapping({
-      tvTicker: 'MSFT',
-      market: buildMarket({ id: 2, name: 'Off-hours', openTime: '01:00', closeTime: '02:00' }),
-    });
-    mappingService.findByTicker.mockImplementation((ticker) =>
-      Promise.resolve(ticker === 'AAPL' ? openMapping : closedMapping),
-    );
-
-    const openResult = await service.processSignal(buildInput({ tvTicker: 'AAPL' }));
-    const closedResult = await service.processSignal(
-      buildInput({
-        tvTicker: 'MSFT',
-        signalReceivedAt: new Date(IN_MARKET_HOURS.getTime() + 60_000),
-      }),
-    );
-
-    expect(openResult.status).toBe(TradeStatus.SUCCESS);
-    expect(closedResult.status).toBe(TradeStatus.MARKET_CLOSED);
-  });
-
-  it('step 6: stops with DAILY_TRADE_LIMIT on BUY when daily trade count is reached', async () => {
+  it('step 5: stops with DAILY_TRADE_LIMIT on BUY when daily trade count is reached', async () => {
     tradingRulesService.get.mockResolvedValue(buildRules({ dailyMaxTradeCount: 5 }));
     tradeService.countSuccessToday.mockResolvedValue(5);
 
@@ -208,7 +154,7 @@ describe('SignalService — condition pipeline', () => {
     expect(result.status).toBe(TradeStatus.DAILY_TRADE_LIMIT);
   });
 
-  it('step 7: stops with DAILY_TOTAL_LIMIT on BUY when the cap would be exceeded', async () => {
+  it('step 6: stops with DAILY_TOTAL_LIMIT on BUY when the cap would be exceeded', async () => {
     tradingRulesService.get.mockResolvedValue(buildRules({ dailyMaxTotalInvestment: 1500 }));
     tradeService.sumInvestmentSuccessToday.mockResolvedValue(1000);
 
@@ -217,43 +163,7 @@ describe('SignalService — condition pipeline', () => {
     expect(result.status).toBe(TradeStatus.DAILY_TOTAL_LIMIT);
   });
 
-  it('step 8: stops with GLOBAL_POSITION_LIMIT on BUY when global cap is reached', async () => {
-    tradingRulesService.get.mockResolvedValue(buildRules({ maxOpenPositionsGlobal: 10 }));
-    igClientService.getOpenPositions.mockResolvedValue(
-      Array.from({ length: 10 }, (_, i) => ({
-        dealId: `D${i}`,
-        epic: 'OTHER.EPIC',
-        direction: Direction.BUY,
-        size: 1,
-      })),
-    );
-
-    const result = await service.processSignal(buildInput({ direction: Direction.BUY }));
-
-    expect(result.status).toBe(TradeStatus.GLOBAL_POSITION_LIMIT);
-  });
-
-  it('fetches open positions only once on BUY (shared by steps 8 and 11)', async () => {
-    tradingRulesService.get.mockResolvedValue(buildRules({ maxOpenPositionsGlobal: 10 }));
-    igClientService.getOpenPositions.mockResolvedValue([]);
-
-    await service.processSignal(buildInput({ direction: Direction.BUY }));
-
-    expect(igClientService.getOpenPositions).toHaveBeenCalledTimes(1);
-  });
-
-  it('step 9: stops with COOL_DOWN on BUY when within the cool-down window', async () => {
-    mappingService.findByTicker.mockResolvedValue(buildMapping({ coolDownMinutes: 30 }));
-    tradeService.getLastSuccessfulTrade.mockResolvedValue({
-      createdAt: new Date(IN_MARKET_HOURS.getTime() - 5 * 60_000),
-    } as never);
-
-    const result = await service.processSignal(buildInput({ direction: Direction.BUY }));
-
-    expect(result.status).toBe(TradeStatus.COOL_DOWN);
-  });
-
-  it('step 10: stops with STOCK_DAILY_LIMIT on BUY when the per-stock cap would be exceeded', async () => {
+  it('step 7: stops with STOCK_DAILY_LIMIT on BUY when the per-stock cap would be exceeded', async () => {
     mappingService.findByTicker.mockResolvedValue(buildMapping({ maxDailySpend: 1500 }));
     tradeService.sumInvestmentSuccessToday.mockResolvedValue(1000);
 
@@ -262,19 +172,7 @@ describe('SignalService — condition pipeline', () => {
     expect(result.status).toBe(TradeStatus.STOCK_DAILY_LIMIT);
   });
 
-  it('step 11: stops with MAX_POSITIONS_STOCK on BUY when the per-stock position cap is reached', async () => {
-    const mapping = buildMapping({ maxOpenPositions: 1 });
-    mappingService.findByTicker.mockResolvedValue(mapping);
-    igClientService.getOpenPositions.mockResolvedValue([
-      { dealId: 'D1', epic: mapping.igEpic, direction: Direction.BUY, size: 1 },
-    ]);
-
-    const result = await service.processSignal(buildInput({ direction: Direction.BUY }));
-
-    expect(result.status).toBe(TradeStatus.MAX_POSITIONS_STOCK);
-  });
-
-  it('step 12: stops with NO_POSITION on SELL when there is no open position for the epic', async () => {
+  it('step 8: stops with NO_POSITION on SELL when there is no open position for the epic', async () => {
     igClientService.getOpenPositions.mockResolvedValue([]);
 
     const result = await service.processSignal(buildInput({ direction: Direction.SELL }));

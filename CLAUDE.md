@@ -15,7 +15,7 @@ The full project documentation lives at `.claude/PROJECT_DOCUMENTATION.md`. Read
 | Auth / 2FA | Section 5 Layer 4, Section 6 (User Management), Section 8 users table |
 | Secrets / Secrets Manager | Section 5 Layer 5, Section 7 (Environment Variables & Secrets) |
 | Webhook endpoint | Section 5 Layer 3, Section 14 (TradingView Configuration) |
-| Signal pipeline | Section 9 (Trading Conditions) — the 15-step condition order is mandatory |
+| Signal pipeline | Section 9 (Trading Conditions) — the 11-step condition order is mandatory |
 | IG API calls | Section 15 (IG API Reference) — all 9 endpoints with versions and request bodies |
 | Trade execution | Section 10 TradeModule, Section 15 endpoints 4, 5, 6, 7 |
 | Database schema | Section 8 — every table, column, type, and all 17 trade statuses |
@@ -28,8 +28,10 @@ The full project documentation lives at `.claude/PROJECT_DOCUMENTATION.md`. Read
 ### Most important things to know from the documentation
 
 - Section 15 lists all 9 IG REST API endpoints to implement with exact path, version header, request/response shape. Use it as the definitive reference — do not guess endpoint details.
-- Section 9 defines the exact 15-step condition check order. It must be followed precisely in `signal/signal.service.ts`. A technical (non-business) duplicate-delivery guard runs ahead of step 1 and logs `DUPLICATE_SIGNAL` — it is not one of the 15 steps.
-- There are 17 trade statuses (Section 8), including `DUPLICATE_SIGNAL`. Every skip path logs a specific status — never generic failure.
+- Section 9 defines the exact 11-step condition check order. It must be followed precisely in `signal/signal.service.ts`. A technical (non-business) duplicate-delivery guard runs ahead of step 1 and logs `DUPLICATE_SIGNAL` — it is not one of the 11 steps.
+- There are 17 trade statuses (Section 8), including `DUPLICATE_SIGNAL`. Every skip path logs a specific status — never generic failure. `MARKET_CLOSED` is legacy-only: the markets/trading-hours feature was removed, nothing writes it anymore, but historical rows keep it.
+- There is no market-hours check — the markets feature (trading-hours profiles) was deliberately removed. Out-of-hours signals go to IG and are logged FAILED if rejected. Don't reintroduce it without discussing first.
+- The global position cap, per-stock cool-down, and per-stock max-open-positions throttles were also deliberately removed (statuses `GLOBAL_POSITION_LIMIT`/`COOL_DOWN`/`MAX_POSITIONS_STOCK` are legacy-only). The remaining throttles are the daily investment/trade-count caps and per-stock daily spend. Don't reintroduce the removed ones without discussing first.
 - Quantity = `investment_amount / signal_price` (Section 9). Signal price comes from TradingView webhook, NOT from IG (IG has no share price data — Section 19 Limitation 1).
 - SELL always checks open positions first (Section 9 step 12). This is not optional.
 - Trades fill at MARKET price by default, or as a LIMIT order at the exact signal price if `executionMode` (global `trading_rules.execution_mode`, overridable per-stock on `stock_mapping.execution_mode`) is SIGNAL_PRICE. A LIMIT order that can't fill immediately is logged FAILED — there is no working-order/pending-order lifecycle. Don't build one without discussing scope first (Section 9 "Execution Mode").
@@ -67,7 +69,7 @@ Trades involve real money. Correctness and safety are non-negotiable. When in do
 - `secrets/` — fetches secrets from AWS Secrets Manager at boot
 - `ig-client/` — IG REST API session + all IG calls (login, search, place, confirm, positions, close)
 - `webhook/` — receives TradingView signals; IP whitelist + secret guards
-- `signal/` — orchestrates the 15-step condition pipeline (plus a duplicate-delivery guard ahead of it)
+- `signal/` — orchestrates the 11-step condition pipeline (plus a duplicate-delivery guard ahead of it)
 - `trading-rules/` — global trading conditions (single row)
 - `mapping/` — stock_mapping CRUD + IG market search
 - `trade/` — trade execution + trade_log writing

@@ -2,14 +2,11 @@ import {
   Column,
   CreateDateColumn,
   Entity,
-  JoinColumn,
-  ManyToOne,
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
 import { ExecutionMode } from '../../common/enums';
 import { decimalTransformer } from '../../common/transformers/decimal.transformer';
-import { Market } from '../../markets/entities/market.entity';
 
 @Entity('stock_mapping')
 export class StockMapping {
@@ -31,17 +28,6 @@ export class StockMapping {
   @Column({ type: 'boolean', default: true })
   enabled: boolean;
 
-  // The exchange/session this stock trades on (its own timezone + open/close
-  // hours + weekdays-only) — used by isMarketOpen() in the signal pipeline
-  // instead of a single global window. Required: every stock must belong to
-  // a market.
-  @Column({ type: 'int', name: 'market_id' })
-  marketId: number;
-
-  @ManyToOne(() => Market, { onDelete: 'RESTRICT' })
-  @JoinColumn({ name: 'market_id' })
-  market: Market;
-
   @Column({
     type: 'decimal',
     precision: 12,
@@ -60,12 +46,6 @@ export class StockMapping {
     transformer: decimalTransformer,
   })
   maxDailySpend: number | null;
-
-  @Column({ type: 'int', nullable: true, name: 'cool_down_minutes' })
-  coolDownMinutes: number | null;
-
-  @Column({ type: 'int', default: 1, name: 'max_open_positions' })
-  maxOpenPositions: number;
 
   // Null = inherit trading_rules.execution_mode (the global default). Set
   // to override just this stock.

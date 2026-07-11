@@ -9,18 +9,14 @@ Trace and verify:
 1. **Webhook entry** (`webhook/`) — IP whitelist guard runs first, then secret guard, then DTO validation. Endpoint returns 200 within 3 seconds and processes async.
 
 2. **Condition pipeline** (`signal/`) — verify the checks run in this exact order and each failure logs the correct status and stops:
-   - duplicate-delivery guard (same ticker+direction+price within 20s) → DUPLICATE_SIGNAL — technical safeguard, runs before step 1, not one of the 15 business steps
+   - duplicate-delivery guard (same ticker+direction+price within 20s) → DUPLICATE_SIGNAL — technical safeguard, runs before step 1, not one of the 11 business steps
    - bot_enabled → BOT_PAUSED
    - direction allowed → BUY_DISABLED / SELL_DISABLED
    - ticker mapped → NOT_MAPPED
    - stock enabled → DISABLED
-   - market open → MARKET_CLOSED
    - daily trade count → DAILY_TRADE_LIMIT
    - daily total investment → DAILY_TOTAL_LIMIT
-   - global positions → GLOBAL_POSITION_LIMIT
-   - stock cool-down → COOL_DOWN
    - stock daily spend → STOCK_DAILY_LIMIT
-   - stock max positions → MAX_POSITIONS_STOCK
    - SELL position check → NO_POSITION
 
 3. **Quantity calculation** (`trade/`) — `investment_amount / signal_price`, rounded to 4dp, guarded against divide-by-zero and against quantities below IG minimum.

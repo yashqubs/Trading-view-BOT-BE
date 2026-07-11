@@ -2,7 +2,6 @@ import { Transform } from 'class-transformer';
 import {
   IsBoolean,
   IsEnum,
-  IsInt,
   IsNumber,
   IsOptional,
   IsPositive,
@@ -29,11 +28,6 @@ export class UpdateStockMappingDto {
   igEpic?: string;
 
   @IsOptional()
-  @IsInt()
-  @IsPositive()
-  marketId?: number;
-
-  @IsOptional()
   @IsString()
   instrumentName?: string;
 
@@ -57,16 +51,6 @@ export class UpdateStockMappingDto {
   @IsNumber()
   @IsPositive()
   maxDailySpend?: number | null;
-
-  @IsOptional()
-  @IsInt()
-  @Min(0)
-  coolDownMinutes?: number;
-
-  @IsOptional()
-  @IsInt()
-  @IsPositive()
-  maxOpenPositions?: number;
 
   // Optional AND nullable — the frontend sends `null` explicitly to revert
   // back to inheriting trading_rules.execution_mode (the global default).
