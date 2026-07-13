@@ -9,6 +9,20 @@ export interface IgMarket {
   offer: number | null;
 }
 
+/** GET /markets/{epic} (v3) — nested shape, unlike the flat search results.
+ * Only the fields this app reads; IG returns many more. Prices here are in
+ * IG's own quote scale (points), NOT dollars — US share DFBs quote 1 point =
+ * 1 cent, so GOOG at $353.11 appears as bid/offer ≈ 35311. */
+export interface IgMarketDetails {
+  snapshot: {
+    marketStatus: string;
+    bid: number | null;
+    offer: number | null;
+    decimalPlacesFactor: number | null;
+    scalingFactor: number | null;
+  };
+}
+
 export interface IgPosition {
   dealId: string;
   epic: string;

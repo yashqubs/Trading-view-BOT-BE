@@ -60,7 +60,7 @@ When a TradingView indicator fires a green (buy) or red (sell) signal, the bot a
 6.  Bot checks global trading rules (enabled? daily limits?)
 7.  Bot looks up ticker in mapping table → IG Epic code
 8.  Bot checks per-stock conditions (enabled? daily spend cap?)
-9.  Bot calculates quantity = investment amount ÷ signal price
+9.  Bot calculates quantity = floor(investment amount ÷ signal price) — whole shares only
 10. Bot calls IG REST API to place the trade
 11. IG executes and returns deal reference
 12. Bot confirms deal and logs result to database
@@ -482,7 +482,7 @@ Local development still uses `.env` for everything with `SECRETS_SOURCE=local` (
 | signal_price | DECIMAL(12,4) | From TradingView — used only to size the trade, not an execution price |
 | executed_price | DECIMAL(12,4), Nullable | Actual IG fill price (`confirmDeal`'s `level`). Orders are MARKET not LIMIT, so this can differ from signal_price. Null unless status = SUCCESS |
 | investment_amount | DECIMAL(12,2), Nullable | |
-| quantity | DECIMAL(12,4), Nullable | amount ÷ price |
+| quantity | DECIMAL(12,4), Nullable | floor(amount ÷ price) — whole shares only since 2026-07-13; column keeps 4dp precision for older rows created before this change |
 | deal_reference | VARCHAR(100), Nullable | IG temp ref |
 | deal_id | VARCHAR(100), Nullable | IG permanent ID |
 | status | VARCHAR(30) | See status list |
@@ -536,7 +536,7 @@ Investment amount, max daily spend per stock, and a per-stock trading on/off swi
 
 ### Investment Amount — Global Default vs. Per-Stock Override
 
-Quantity is always `investment_amount / signal_price` (see step 9 above and Section 15 IG endpoints). Which `investment_amount` that is follows the same override pattern as execution mode and slippage below:
+Quantity is always `Math.floor(investment_amount / signal_price)` — whole shares only, rounded down so the actual spend never exceeds `investment_amount` (see step 9 above and Section 15 IG endpoints). If that floors to zero (investment amount too small to buy even one share at this price), the trade fails safely and logs `FAILED` rather than placing a zero-size order. Which `investment_amount` that is follows the same override pattern as execution mode and slippage below:
 
 **Resolution order:** `stock_mapping.investment_amount` (if not NULL) overrides `trading_rules.investment_amount` (the global default) for that specific stock — resolved by `resolveInvestmentAmount()` (`mapping/utils/resolve-investment-amount.util.ts`), used everywhere a trade amount is needed: quantity sizing (`TradeService.executeTrade`), the daily-total-investment check (step 6), and the per-stock daily-spend check (step 7). The resolved amount is what actually gets logged to `trade_log.investment_amount`, never the raw (possibly NULL) per-stock column. Unlike the daily caps, the global default itself is never NULL — there's no meaningful "no investment amount" state. Set globally on the Conditions page ("Investment" card); overridden per-stock from the stock's own detail/edit page ("Override investment per trade for TICKER").
 
@@ -549,15 +549,19 @@ Controls the price a trade actually fills at, independent of how quantity is siz
 | Mode | IG order type | Behaviour |
 |---|---|---|
 | **MARKET** (default) | `orderType: MARKET`, no price | Fills immediately at IG's current price. This is the original/only behaviour before this setting existed. |
-| **SIGNAL_PRICE** | `orderType: LIMIT`, `level: <signal price>` | Places a limit order at the exact TradingView signal price. Only fills at that price or better. |
+| **SIGNAL_PRICE** | `orderType: LIMIT`, `level: <scaled signal price ± slippage>` | Places a limit order at the TradingView signal price (adjusted by `max_slippage_percent`, converted to IG's points scale — see below). Only fills at that price or better; otherwise IG rejects it immediately (`LIMIT_ORDER_WRONG_SIDE_OF_MARKET`). |
 
 **Resolution order:** `stock_mapping.execution_mode` (if not NULL) overrides `trading_rules.execution_mode` (the global default) for that specific stock. Set globally on the Conditions page; overridden per-stock from the stock's own detail page ("Override fill price for TICKER").
+
+**Price scaling (critical, confirmed live 2026-07-13):** IG quotes US share DFBs in points where 1 point = 1 cent — GOOG at $353.11 is bid/offer ≈ 35311 on IG. A LIMIT `level` sent in raw dollars is therefore ~99% below the market and **always** rejects with `LIMIT_ORDER_WRONG_SIDE_OF_MARKET`, regardless of the dollar value (this bug made every SIGNAL_PRICE order fail until fixed). `TradeService.resolveLimitLevel` fetches `GET /markets/{epic}` before each LIMIT order, derives the scale factor as the nearest power of ten to (live quote ÷ signal price) (`derivePriceScaleFactor`), and sends `signalPrice × factor ± slippage` as the level. Fill prices from `/confirms` are converted back to the signal-price scale before being stored in `trade_log.executed_price` (`normalizeIgPrice`), so executed vs signal price are directly comparable everywhere. If no live quote is available the trade logs `FAILED` (`NO_LIVE_QUOTE_FOR_LIMIT_LEVEL`) — never guess a price scale on a real-money order.
 
 **What happens when a SIGNAL_PRICE limit order can't fill immediately — this is a deliberate scope decision, not a gap to fill in later:** this app does **not** track resting/working orders. If IG's `/positions/otc` LIMIT order doesn't fill straight away, it is handled exactly like a rejected market order — logged `FAILED` with whatever reason IG gives, and that's the end of it. There is no pending state, no polling for a later fill, no automatic cancellation timer. If real-world testing on IG demo shows this isn't the desired behaviour (e.g. you'd rather the order rest and fill later within the signal's acceptable-delay window), that's a bigger feature — a working-order lifecycle — and should be scoped separately rather than assumed.
 
 ### Dev Test Signal Endpoint (Manual Bypass)
 
-`POST /signal/test` (`SignalController`) lets a logged-in portal user run the exact same 11-step condition pipeline used by the real webhook, without waiting for TradingView. Body: `{ tvTicker, direction, price }` — no `secret` field (portal-session auth via `JwtAuthGuard` instead). Unlike the real webhook it's `await`ed and returns the resulting `trade_log` row directly, since there's no 3-second TradingView timeout to respect and immediate feedback is the point.
+`POST /signal/test` (`SignalController`) lets a logged-in portal user run the exact same 11-step condition pipeline used by the real webhook, without waiting for TradingView. Body: `{ tvTicker, direction, price, investmentAmount?, executionMode?, maxSlippagePercent? }` — no `secret` field (portal-session auth via `JwtAuthGuard` instead). Unlike the real webhook it's `await`ed and returns the resulting `trade_log` row directly, since there's no 3-second TradingView timeout to respect and immediate feedback is the point.
+
+`investmentAmount`, `executionMode`, and `maxSlippagePercent` are all optional overrides. Each, when set, takes priority over both the stock's own setting and the global default (`SignalInput.investmentAmountOverride` / `executionModeOverride` / `maxSlippagePercentOverride`, resolved in `TradeService.executeTrade`) — lets you size and configure a one-off test trade without touching the stock's real configuration. Omit any of them to use the normal resolution (stock override, or global default). Real webhook signals never set these fields, so production behaviour is completely unaffected by their existence.
 
 **Gating — fails closed:** guarded by `JwtAuthGuard` + `TestSignalsEnabledGuard`, which only passes when `ENABLE_TEST_SIGNALS` is the exact string `'true'`. Unset or any other value → `403 Test signals are disabled`. This must stay unset (or `false`) everywhere except local dev — it's not a sandbox: it runs the real pipeline and, if the conditions pass, places a **real IG order** (demo account by default per `IG_BASE_URL`, but a real one if that's ever pointed at the live API). `GET /system/status` exposes the resolved flag as `testSignalsEnabled` so the portal can show/hide the "Send test signal" button per environment.
 
@@ -842,16 +846,18 @@ Returns array of markets, each with: epic, instrumentName, instrumentType, marke
 **4. Place Position (POST /positions/otc, v2)**
 Body: epic, direction (BUY/SELL), size (quantity), orderType (MARKET by default, or LIMIT — see Section 9 "Execution Mode"), `level` (signal price, only when orderType is LIMIT), forceOpen (true), guaranteedStop (false), expiry (`'DFB'`). Returns dealReference.
 
-> **Spread bet account — no `currencyCode` field.** This account is a spread-betting account (Section 1), not CFD. `currencyCode` is CFD-only; sending it here gets the order rejected with `REJECT_CFD_ORDER_ON_SPREADBET_ACCOUNT`, which is exactly the error that surfaced this and prompted the fix. `expiry` is the literal string `'DFB'` (Daily Funded Bet — the non-expiring spread-bet product, the spread-bet equivalent of a CFD's open-ended position), not `'-'`.
+> **Spread bet account (Section 1), not CFD.** `expiry` must be the literal string `'DFB'` (Daily Funded Bet — the non-expiring spread-bet product, the spread-bet equivalent of a CFD's open-ended position) — `'-'` is CFD-only and gets the order rejected with `REJECT_CFD_ORDER_ON_SPREADBET_ACCOUNT`. `currencyCode` **is still required** on this endpoint regardless of account type — omitting it 400s with `validation.null-not-allowed.request.currencyCode`. (An earlier version of this doc said to drop `currencyCode` too; that was wrong — `expiry` was the actual fix for the CFD rejection, confirmed by testing both against the real IG demo account.)
 
 **5. Confirm Deal (GET /confirms/{dealReference}, v1)**
-Returns dealId, dealStatus (ACCEPTED/REJECTED), status (OPEN/CLOSED), and `level` — the actual fill price, stored as `trade_log.executed_price`. Always call after placing.
+Returns dealId, dealStatus (ACCEPTED/REJECTED), status (OPEN/CLOSED), and `level` — the actual fill price **in IG's points scale**; it is converted back to the signal-price scale via `normalizeIgPrice` before being stored as `trade_log.executed_price` (see Section 9 "Price scaling"). Always call after placing.
 
 **6. Get Open Positions (GET /positions, v2)**
 Returns array of positions with position.dealId, position.size, position.direction, market.epic, market.instrumentName. Used for all position checks.
 
 **7. Close Position (DELETE /positions/otc, v1)**
 Body: dealId, direction (opposite of open), size, orderType (MARKET by default, or LIMIT — same Execution Mode setting as opening a position), `level` (only when LIMIT), expiry (`'DFB'`). Used when a SELL signal closes an existing long position.
+
+> **Must be sent as POST with a `_method: DELETE` header, not a real DELETE** (confirmed live 2026-07-13): IG's gateway drops the body of genuine DELETE requests, so a real DELETE 400s with `validation.null-not-allowed.request` — every close would fail. `IgClientService.request` transparently converts any DELETE-with-body into `POST` + `_method: DELETE` header (IG's documented workaround). Don't "simplify" this back to a plain DELETE.
 
 ### IG Epic Code Structure
 

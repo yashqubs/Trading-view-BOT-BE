@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Between, Repository, SelectQueryBuilder } from 'typeorm';
@@ -17,6 +17,7 @@ import { SignalInput } from './interfaces/signal-input.interface';
 import { TradeLogSummary } from './interfaces/trade-log-summary.interface';
 import { calculateLimitLevel } from './utils/calculate-limit-level.util';
 import { calculateQuantity } from './utils/calculate-quantity.util';
+import { derivePriceScaleFactor, normalizeIgPrice } from './utils/ig-price-scale.util';
 
 export interface PaginatedTradeLogs {
   items: TradeLog[];
@@ -75,29 +76,50 @@ export class TradeService {
     existingPosition: IgPosition | null,
     rules: TradingRules,
   ): Promise<TradeLog> {
-    const investmentAmount = resolveInvestmentAmount(mapping, rules);
-    const quantity = calculateQuantity(investmentAmount, input.signalPrice);
-    const executionMode = mapping.executionMode ?? rules.executionMode;
-    const maxSlippagePercent = Number(mapping.maxSlippagePercent ?? rules.maxSlippagePercent);
-    const igOrderParams =
-      executionMode === ExecutionMode.SIGNAL_PRICE
-        ? {
-            orderType: 'LIMIT' as const,
-            level: calculateLimitLevel(input.signalPrice, input.direction, maxSlippagePercent),
-          }
-        : { orderType: 'MARKET' as const };
+    const investmentAmount = resolveInvestmentAmount(
+      mapping,
+      rules,
+      input.investmentAmountOverride,
+    );
+    const executionMode =
+      input.executionModeOverride ?? mapping.executionMode ?? rules.executionMode;
+    const maxSlippagePercent = Number(
+      input.maxSlippagePercentOverride ?? mapping.maxSlippagePercent ?? rules.maxSlippagePercent,
+    );
 
-    const baseLog = {
+    // quantity starts null — calculateQuantity() can throw (e.g. investment
+    // amount too small to buy a whole share at this price), and that must
+    // still produce a logged FAILED row, not vanish before baseLog exists.
+    const baseLog: {
+      tvTicker: string;
+      igEpic: string;
+      direction: Direction;
+      signalPrice: number;
+      investmentAmount: number;
+      quantity: number | null;
+      signalReceivedAt: Date;
+    } = {
       tvTicker: input.tvTicker,
       igEpic: mapping.igEpic,
       direction: input.direction,
       signalPrice: input.signalPrice,
       investmentAmount,
-      quantity,
+      quantity: null,
       signalReceivedAt: input.signalReceivedAt,
     };
 
     try {
+      const quantity = calculateQuantity(investmentAmount, input.signalPrice);
+      baseLog.quantity = quantity;
+
+      const igOrderParams =
+        executionMode === ExecutionMode.SIGNAL_PRICE
+          ? {
+              orderType: 'LIMIT' as const,
+              level: await this.resolveLimitLevel(input, mapping.igEpic, maxSlippagePercent),
+            }
+          : { orderType: 'MARKET' as const };
+
       let dealReference: string;
 
       if (input.direction === Direction.SELL) {
@@ -130,11 +152,16 @@ export class TradeService {
       const successLog = await this.tradeLogRepository.save(
         this.tradeLogRepository.create({
           ...baseLog,
-          quantity: input.direction === Direction.SELL ? existingPosition!.size : baseLog.quantity,
+          quantity: input.direction === Direction.SELL ? existingPosition!.size : quantity,
           status: TradeStatus.SUCCESS,
           dealReference,
           dealId: confirmation.dealId,
-          executedPrice: confirmation.level,
+          // IG confirms in its own points scale; store on the signal-price
+          // scale so executed_price is comparable to signal_price everywhere.
+          executedPrice:
+            confirmation.level != null
+              ? normalizeIgPrice(confirmation.level, input.signalPrice)
+              : null,
           executedAt: new Date(),
         }),
       );
@@ -144,9 +171,57 @@ export class TradeService {
       await this.tradingRulesService.resetFailureCount();
       return successLog;
     } catch (error) {
-      const errorCode = error instanceof IgApiException ? error.errorCode : 'UNKNOWN_ERROR';
-      return this.saveFailedAndHandle(baseLog, null, errorCode);
+      return this.saveFailedAndHandle(baseLog, null, this.resolveErrorCode(error));
     }
+  }
+
+  /**
+   * The LIMIT level for SIGNAL_PRICE mode, in IG's own quote scale. The
+   * signal price is in dollars but IG quotes US share DFBs in points
+   * (1 point = 1 cent — see derivePriceScaleFactor), so the level must be
+   * scaled onto IG's quote before applying the slippage tolerance; sending
+   * dollar levels raw made every LIMIT order fail
+   * LIMIT_ORDER_WRONG_SIDE_OF_MARKET. The live quote side we'd trade against
+   * (offer for BUY, bid for SELL) anchors the scale derivation. Any failure
+   * here (market details unavailable, no live quote) throws and logs FAILED —
+   * never guess a price scale on a real-money order.
+   */
+  private async resolveLimitLevel(
+    input: SignalInput,
+    igEpic: string,
+    maxSlippagePercent: number,
+  ): Promise<number> {
+    const details = await this.igClientService.getMarketDetails(igEpic);
+    const reference =
+      input.direction === Direction.BUY ? details.snapshot?.offer : details.snapshot?.bid;
+    if (reference == null || reference <= 0) {
+      throw new IgApiException('NO_LIVE_QUOTE_FOR_LIMIT_LEVEL');
+    }
+    const factor = derivePriceScaleFactor(reference, input.signalPrice);
+    const level = calculateLimitLevel(
+      input.signalPrice * factor,
+      input.direction,
+      maxSlippagePercent,
+    );
+    // IG rejects levels more precise than the market's own quote precision
+    // (decimalPlacesFactor — GOOG quotes 1dp, calculateLimitLevel rounds 2dp).
+    const decimalPlaces = details.snapshot.decimalPlacesFactor;
+    return decimalPlaces != null && decimalPlaces >= 0
+      ? Number(level.toFixed(decimalPlaces))
+      : level;
+  }
+
+  private resolveErrorCode(error: unknown): string {
+    if (error instanceof IgApiException) {
+      return error.errorCode;
+    }
+    if (error instanceof BadRequestException) {
+      const response = error.getResponse();
+      const message =
+        typeof response === 'string' ? response : (response as { message?: string }).message;
+      return message ?? 'VALIDATION_ERROR';
+    }
+    return 'UNKNOWN_ERROR';
   }
 
   async findAll(query: TradeLogQueryDto): Promise<PaginatedTradeLogs> {

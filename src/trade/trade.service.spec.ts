@@ -68,6 +68,17 @@ describe('TradeService', () => {
             confirmDeal: jest.fn(),
             getOpenPositions: jest.fn().mockResolvedValue([]),
             getOpenPositionCount: jest.fn(),
+            // Same scale as the signal price (factor 1) unless a test
+            // overrides it — the points-scaling tests set their own quote.
+            getMarketDetails: jest.fn().mockResolvedValue({
+              snapshot: {
+                marketStatus: 'TRADEABLE',
+                bid: 99.8,
+                offer: 100.2,
+                decimalPlacesFactor: 2,
+                scalingFactor: 1,
+              },
+            }),
           },
         },
         {
@@ -142,11 +153,42 @@ describe('TradeService', () => {
 
       const result = await service.executeTrade(input, mappingNoOverride, null, rulesWithDefault);
 
-      // quantity = 250 / 100 (signal price) = 2.5
-      expect(igClientService.placeOrder).toHaveBeenCalledWith(
-        expect.objectContaining({ size: 2.5 }),
-      );
+      // quantity = floor(250 / 100 signal price) = 2
+      expect(igClientService.placeOrder).toHaveBeenCalledWith(expect.objectContaining({ size: 2 }));
       expect(result.investmentAmount).toBe(250);
+    });
+
+    it('logs FAILED (not an unhandled exception) when the investment amount is too small to buy a whole share', async () => {
+      const tinyInvestment = { ...mapping, investmentAmount: 1 } as StockMapping;
+
+      const result = await service.executeTrade(input, tinyInvestment, null, rules);
+
+      expect(result.status).toBe(TradeStatus.FAILED);
+      expect(result.quantity).toBeNull();
+      expect(result.errorMessage).toContain('too small');
+      expect(igClientService.placeOrder).not.toHaveBeenCalled();
+    });
+
+    it('sizes off input.investmentAmountOverride when set, ignoring the mapping/rules amount entirely', async () => {
+      igClientService.placeOrder.mockResolvedValue({ dealReference: 'REF-1e' });
+      igClientService.confirmDeal.mockResolvedValue({
+        dealId: 'DEAL-1e',
+        dealStatus: 'ACCEPTED',
+        status: 'OPEN',
+        reason: null,
+        level: 100,
+      });
+
+      const result = await service.executeTrade(
+        { ...input, investmentAmountOverride: 300 },
+        mapping, // mapping.investmentAmount is 1000 — must be ignored
+        null,
+        rules,
+      );
+
+      // quantity = floor(300 / 100 signal price) = 3
+      expect(igClientService.placeOrder).toHaveBeenCalledWith(expect.objectContaining({ size: 3 }));
+      expect(result.investmentAmount).toBe(300);
     });
 
     it('places a LIMIT order at the signal price when the global execution mode is SIGNAL_PRICE', async () => {
@@ -236,6 +278,150 @@ describe('TradeService', () => {
       expect(igClientService.placeOrder).toHaveBeenCalledWith(
         expect.objectContaining({ orderType: 'LIMIT', level: input.signalPrice }),
       );
+    });
+
+    it('sizes off input.executionModeOverride when set, ignoring the mapping/rules mode entirely', async () => {
+      igClientService.placeOrder.mockResolvedValue({ dealReference: 'REF-1f' });
+      igClientService.confirmDeal.mockResolvedValue({
+        dealId: 'DEAL-1f',
+        dealStatus: 'ACCEPTED',
+        status: 'OPEN',
+        reason: null,
+        level: 100,
+      });
+
+      // Both mapping and rules say MARKET; override says SIGNAL_PRICE.
+      await service.executeTrade(
+        { ...input, executionModeOverride: ExecutionMode.SIGNAL_PRICE },
+        mapping,
+        null,
+        rules,
+      );
+
+      expect(igClientService.placeOrder).toHaveBeenCalledWith(
+        expect.objectContaining({ orderType: 'LIMIT', level: input.signalPrice }),
+      );
+    });
+
+    it('applies input.maxSlippagePercentOverride when set, ignoring the mapping/rules tolerance entirely', async () => {
+      igClientService.placeOrder.mockResolvedValue({ dealReference: 'REF-1g' });
+      igClientService.confirmDeal.mockResolvedValue({
+        dealId: 'DEAL-1g',
+        dealStatus: 'ACCEPTED',
+        status: 'OPEN',
+        reason: null,
+        level: 100,
+      });
+
+      await service.executeTrade({ ...input, maxSlippagePercentOverride: 3 }, mapping, null, {
+        executionMode: ExecutionMode.SIGNAL_PRICE,
+        maxSlippagePercent: 1, // would give 101 if not overridden
+      } as TradingRules);
+
+      // signalPrice 100, 3% tolerance (override) -> 103, not 101.
+      expect(igClientService.placeOrder).toHaveBeenCalledWith(
+        expect.objectContaining({ orderType: 'LIMIT', level: 103 }),
+      );
+    });
+
+    it('scales the LIMIT level onto IG points when the market quotes 100x the signal price', async () => {
+      // US share DFBs quote 1 point = 1 cent: signal $100 ↔ IG market ~10,000.
+      igClientService.getMarketDetails.mockResolvedValue({
+        snapshot: {
+          marketStatus: 'TRADEABLE',
+          bid: 10015,
+          offer: 10020,
+          decimalPlacesFactor: 1,
+          scalingFactor: 1,
+        },
+      });
+      igClientService.placeOrder.mockResolvedValue({ dealReference: 'REF-1h' });
+      igClientService.confirmDeal.mockResolvedValue({
+        dealId: 'DEAL-1h',
+        dealStatus: 'ACCEPTED',
+        status: 'OPEN',
+        reason: null,
+        level: 10020,
+      });
+
+      const result = await service.executeTrade(input, mapping, null, {
+        executionMode: ExecutionMode.SIGNAL_PRICE,
+        maxSlippagePercent: 1,
+      } as TradingRules);
+
+      // level = (signal 100 × factor 100) × 1.01 = 10100 — in IG points, not dollars.
+      expect(igClientService.placeOrder).toHaveBeenCalledWith(
+        expect.objectContaining({ orderType: 'LIMIT', level: 10100 }),
+      );
+      // Filled at 10020 points → stored back on the signal scale as 100.20.
+      expect(result.executedPrice).toBe(100.2);
+    });
+
+    it("rounds the LIMIT level to the market's own decimalPlacesFactor", async () => {
+      igClientService.getMarketDetails.mockResolvedValue({
+        snapshot: {
+          marketStatus: 'TRADEABLE',
+          bid: 35280,
+          offer: 35311,
+          decimalPlacesFactor: 1, // GOOG quotes 1dp — a 2dp level could be rejected
+          scalingFactor: 1,
+        },
+      });
+      igClientService.placeOrder.mockResolvedValue({ dealReference: 'REF-1j' });
+      igClientService.confirmDeal.mockResolvedValue({
+        dealId: 'DEAL-1j',
+        dealStatus: 'ACCEPTED',
+        status: 'OPEN',
+        reason: null,
+        level: 35311,
+      });
+
+      await service.executeTrade({ ...input, signalPrice: 352.76 }, mapping, null, {
+        executionMode: ExecutionMode.SIGNAL_PRICE,
+        maxSlippagePercent: 0.5,
+      } as TradingRules);
+
+      // 352.76 × 100 × 1.005 = 35452.38 → rounded to 1dp = 35452.4.
+      expect(igClientService.placeOrder).toHaveBeenCalledWith(
+        expect.objectContaining({ orderType: 'LIMIT', level: 35452.4 }),
+      );
+    });
+
+    it('normalizes a points-scale fill price on a MARKET order without calling getMarketDetails', async () => {
+      igClientService.placeOrder.mockResolvedValue({ dealReference: 'REF-1i' });
+      igClientService.confirmDeal.mockResolvedValue({
+        dealId: 'DEAL-1i',
+        dealStatus: 'ACCEPTED',
+        status: 'OPEN',
+        reason: null,
+        level: 10125, // points — $101.25
+      });
+
+      const result = await service.executeTrade(input, mapping, null, rules);
+
+      expect(igClientService.getMarketDetails).not.toHaveBeenCalled();
+      expect(result.executedPrice).toBe(101.25);
+    });
+
+    it('logs FAILED when the live quote needed for a LIMIT level is unavailable', async () => {
+      igClientService.getMarketDetails.mockResolvedValue({
+        snapshot: {
+          marketStatus: 'CLOSED',
+          bid: null,
+          offer: null,
+          decimalPlacesFactor: 1,
+          scalingFactor: 1,
+        },
+      });
+
+      const result = await service.executeTrade(input, mapping, null, {
+        executionMode: ExecutionMode.SIGNAL_PRICE,
+        maxSlippagePercent: 1,
+      } as TradingRules);
+
+      expect(result.status).toBe(TradeStatus.FAILED);
+      expect(result.errorMessage).toBe('NO_LIVE_QUOTE_FOR_LIMIT_LEVEL');
+      expect(igClientService.placeOrder).not.toHaveBeenCalled();
     });
 
     it('logs FAILED when IG rejects the deal', async () => {

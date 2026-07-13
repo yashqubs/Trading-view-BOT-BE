@@ -28,6 +28,9 @@ export class SignalController {
       direction: dto.direction,
       signalPrice: dto.price,
       signalReceivedAt: new Date(),
+      investmentAmountOverride: dto.investmentAmount,
+      executionModeOverride: dto.executionMode,
+      maxSlippagePercentOverride: dto.maxSlippagePercent,
     });
   }
 }

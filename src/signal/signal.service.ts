@@ -106,7 +106,8 @@ export class SignalService {
       // 6. daily total investment
       if (rules.dailyMaxTotalInvestment !== null) {
         const investedToday = await this.tradeService.sumInvestmentSuccessToday();
-        const wouldBeInvested = investedToday + resolveInvestmentAmount(mapping, rules);
+        const wouldBeInvested =
+          investedToday + resolveInvestmentAmount(mapping, rules, input.investmentAmountOverride);
         if (wouldBeInvested > Number(rules.dailyMaxTotalInvestment)) {
           return this.tradeService.logSkip(input, TradeStatus.DAILY_TOTAL_LIMIT, mapping.igEpic);
         }
@@ -117,7 +118,9 @@ export class SignalService {
         const investedTodayForStock = await this.tradeService.sumInvestmentSuccessToday(
           mapping.tvTicker,
         );
-        const wouldBeInvested = investedTodayForStock + resolveInvestmentAmount(mapping, rules);
+        const wouldBeInvested =
+          investedTodayForStock +
+          resolveInvestmentAmount(mapping, rules, input.investmentAmountOverride);
         if (wouldBeInvested > Number(mapping.maxDailySpend)) {
           return this.tradeService.logSkip(input, TradeStatus.STOCK_DAILY_LIMIT, mapping.igEpic);
         }

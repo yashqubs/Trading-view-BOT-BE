@@ -6,8 +6,12 @@ describe('calculateQuantity', () => {
     expect(calculateQuantity(1000, 100)).toBe(10);
   });
 
-  it('rounds to 4 decimal places', () => {
-    expect(calculateQuantity(100, 3)).toBeCloseTo(33.3333, 4);
+  it('rounds down to the nearest whole share', () => {
+    expect(calculateQuantity(500, 110)).toBe(4); // 4.5454... -> 4, never 5 (would exceed the investment amount)
+  });
+
+  it('throws when the investment amount cannot buy even one whole share at this price', () => {
+    expect(() => calculateQuantity(50, 110)).toThrow(BadRequestException);
   });
 
   it('throws when signal price is zero (divide-by-zero guard)', () => {

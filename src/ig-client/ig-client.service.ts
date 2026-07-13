@@ -11,6 +11,7 @@ import {
   ClosePositionParams,
   ConfirmDealResult,
   IgMarket,
+  IgMarketDetails,
   IgPosition,
   PlaceOrderParams,
   PlaceOrderResult,
@@ -114,43 +115,51 @@ export class IgClientService {
     return response.markets;
   }
 
-  async getMarketDetails(epic: string): Promise<IgMarket> {
+  async getMarketDetails(epic: string): Promise<IgMarketDetails> {
     await this.ensureSession();
-    return this.request<IgMarket>({ method: 'GET', url: `/markets/${epic}`, version: 3 });
+    return this.request<IgMarketDetails>({ method: 'GET', url: `/markets/${epic}`, version: 3 });
   }
 
-  // Spread bet account (see PROJECT_DOCUMENTATION.md Section 1) — no
-  // currencyCode field (that's CFD-only; IG rejects it on a spread-bet
-  // account with REJECT_CFD_ORDER_ON_SPREADBET_ACCOUNT) and expiry is 'DFB'
-  // (Daily Funded Bet — the standard non-expiring spread bet product,
-  // functionally equivalent to a CFD's open-ended position).
+  // Spread bet account (see PROJECT_DOCUMENTATION.md Section 1) — expiry
+  // must be 'DFB' (Daily Funded Bet, the non-expiring spread-bet product;
+  // '-' is CFD-only and gets REJECT_CFD_ORDER_ON_SPREADBET_ACCOUNT).
+  // currencyCode IS still required here (omitting it 400s with
+  // "null-not-allowed.request.currencyCode") — it wasn't the cause of that
+  // CFD rejection, expiry was.
   async placeOrder(params: PlaceOrderParams): Promise<PlaceOrderResult> {
     await this.ensureSession();
     const orderType = params.orderType ?? 'MARKET';
-    return this.request<PlaceOrderResult>({
+    const data = {
+      epic: params.epic,
+      direction: params.direction,
+      size: params.size,
+      orderType,
+      ...(orderType === 'LIMIT' ? { level: params.level } : {}),
+      currencyCode: 'GBP',
+      forceOpen: true,
+      guaranteedStop: false,
+      expiry: 'DFB',
+    };
+    this.logger.log(`IG placeOrder request: ${JSON.stringify(data)}`);
+    const result = await this.request<PlaceOrderResult>({
       method: 'POST',
       url: '/positions/otc',
       version: 2,
-      data: {
-        epic: params.epic,
-        direction: params.direction,
-        size: params.size,
-        orderType,
-        ...(orderType === 'LIMIT' ? { level: params.level } : {}),
-        forceOpen: true,
-        guaranteedStop: false,
-        expiry: 'DFB',
-      },
+      data,
     });
+    this.logger.log(`IG placeOrder response: ${JSON.stringify(result)}`);
+    return result;
   }
 
   async confirmDeal(dealReference: string): Promise<ConfirmDealResult> {
     await this.ensureSession();
-    return this.request<ConfirmDealResult>({
+    const result = await this.request<ConfirmDealResult>({
       method: 'GET',
       url: `/confirms/${dealReference}`,
       version: 1,
     });
+    this.logger.log(`IG confirmDeal response: ${JSON.stringify(result)}`);
+    return result;
   }
 
   async getOpenPositions(): Promise<IgPosition[]> {
@@ -181,19 +190,23 @@ export class IgClientService {
   async closePosition(params: ClosePositionParams): Promise<PlaceOrderResult> {
     await this.ensureSession();
     const orderType = params.orderType ?? 'MARKET';
-    return this.request<PlaceOrderResult>({
+    const data = {
+      dealId: params.dealId,
+      direction: params.direction,
+      size: params.size,
+      orderType,
+      ...(orderType === 'LIMIT' ? { level: params.level } : {}),
+      expiry: 'DFB',
+    };
+    this.logger.log(`IG closePosition request: ${JSON.stringify(data)}`);
+    const result = await this.request<PlaceOrderResult>({
       method: 'DELETE',
       url: '/positions/otc',
       version: 1,
-      data: {
-        dealId: params.dealId,
-        direction: params.direction,
-        size: params.size,
-        orderType,
-        ...(orderType === 'LIMIT' ? { level: params.level } : {}),
-        expiry: 'DFB',
-      },
+      data,
     });
+    this.logger.log(`IG closePosition response: ${JSON.stringify(result)}`);
+    return result;
   }
 
   async getAccounts(): Promise<unknown> {
@@ -229,8 +242,13 @@ export class IgClientService {
       throw new IgApiException('NO_ACTIVE_SESSION');
     }
 
+    // IG's gateway drops the body of real DELETE requests (close-position
+    // then 400s with validation.null-not-allowed.request). IG's documented
+    // workaround: send POST with a _method: DELETE header instead.
+    const isDeleteWithBody = options.method === 'DELETE' && options.data !== undefined;
+
     const config: AxiosRequestConfig = {
-      method: options.method,
+      method: isDeleteWithBody ? 'POST' : options.method,
       url: options.url,
       data: options.data,
       params: options.params,
@@ -238,6 +256,7 @@ export class IgClientService {
         ...this.baseHeaders(options.version),
         CST: this.session.cst,
         'X-SECURITY-TOKEN': this.session.securityToken,
+        ...(isDeleteWithBody ? { _method: 'DELETE' } : {}),
       },
     };
 
@@ -279,7 +298,11 @@ export class IgClientService {
   private toIgApiException(error: unknown): IgApiException {
     const axiosError = error as AxiosError<{ errorCode?: string }>;
     const errorCode = axiosError?.response?.data?.errorCode ?? axiosError?.message ?? 'UNKNOWN';
-    this.logger.error(`IG API call failed: ${errorCode}`);
+    // Full response body — errorCode alone hides which field IG objected to.
+    // IG error bodies never echo credentials, so this is safe to log.
+    this.logger.error(
+      `IG API call failed: ${errorCode} (HTTP ${axiosError?.response?.status ?? '?'}) body: ${JSON.stringify(axiosError?.response?.data ?? null)}`,
+    );
     return new IgApiException(errorCode);
   }
 }

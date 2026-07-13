@@ -176,6 +176,22 @@ describe('SignalService — condition pipeline', () => {
     expect(result.status).toBe(TradeStatus.DAILY_TOTAL_LIMIT);
   });
 
+  it('step 6: a dev-test investmentAmountOverride takes priority over both the stock and the global default', async () => {
+    tradingRulesService.get.mockResolvedValue(
+      buildRules({ dailyMaxTotalInvestment: 1200, investmentAmount: 500 }),
+    );
+    mappingService.findByTicker.mockResolvedValue(buildMapping({ investmentAmount: 50 }));
+    tradeService.sumInvestmentSuccessToday.mockResolvedValue(1000);
+
+    // Override (300) pushes the total over the 1200 cap; neither the
+    // stock's own 50 nor the global 500 default would have.
+    const result = await service.processSignal(
+      buildInput({ direction: Direction.BUY, investmentAmountOverride: 300 }),
+    );
+
+    expect(result.status).toBe(TradeStatus.DAILY_TOTAL_LIMIT);
+  });
+
   it('step 7: stops with STOCK_DAILY_LIMIT on BUY when the per-stock cap would be exceeded', async () => {
     mappingService.findByTicker.mockResolvedValue(buildMapping({ maxDailySpend: 1500 }));
     tradeService.sumInvestmentSuccessToday.mockResolvedValue(1000);
