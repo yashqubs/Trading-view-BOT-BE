@@ -140,26 +140,21 @@ export class IgClientService {
       guaranteedStop: false,
       expiry: 'DFB',
     };
-    this.logger.log(`IG placeOrder request: ${JSON.stringify(data)}`);
-    const result = await this.request<PlaceOrderResult>({
+    return this.request<PlaceOrderResult>({
       method: 'POST',
       url: '/positions/otc',
       version: 2,
       data,
     });
-    this.logger.log(`IG placeOrder response: ${JSON.stringify(result)}`);
-    return result;
   }
 
   async confirmDeal(dealReference: string): Promise<ConfirmDealResult> {
     await this.ensureSession();
-    const result = await this.request<ConfirmDealResult>({
+    return this.request<ConfirmDealResult>({
       method: 'GET',
       url: `/confirms/${dealReference}`,
       version: 1,
     });
-    this.logger.log(`IG confirmDeal response: ${JSON.stringify(result)}`);
-    return result;
   }
 
   async getOpenPositions(): Promise<IgPosition[]> {
@@ -198,15 +193,12 @@ export class IgClientService {
       ...(orderType === 'LIMIT' ? { level: params.level } : {}),
       expiry: 'DFB',
     };
-    this.logger.log(`IG closePosition request: ${JSON.stringify(data)}`);
-    const result = await this.request<PlaceOrderResult>({
+    return this.request<PlaceOrderResult>({
       method: 'DELETE',
       url: '/positions/otc',
       version: 1,
       data,
     });
-    this.logger.log(`IG closePosition response: ${JSON.stringify(result)}`);
-    return result;
   }
 
   async getAccounts(): Promise<unknown> {
@@ -298,11 +290,7 @@ export class IgClientService {
   private toIgApiException(error: unknown): IgApiException {
     const axiosError = error as AxiosError<{ errorCode?: string }>;
     const errorCode = axiosError?.response?.data?.errorCode ?? axiosError?.message ?? 'UNKNOWN';
-    // Full response body — errorCode alone hides which field IG objected to.
-    // IG error bodies never echo credentials, so this is safe to log.
-    this.logger.error(
-      `IG API call failed: ${errorCode} (HTTP ${axiosError?.response?.status ?? '?'}) body: ${JSON.stringify(axiosError?.response?.data ?? null)}`,
-    );
+    this.logger.error(`IG API call failed: ${errorCode}`);
     return new IgApiException(errorCode);
   }
 }

@@ -9,6 +9,7 @@ const COLUMNS: Array<keyof TradeLog> = [
   'executedPrice',
   'investmentAmount',
   'quantity',
+  'maxSlippagePercent',
   'dealReference',
   'dealId',
   'status',

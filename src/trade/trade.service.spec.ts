@@ -136,6 +136,9 @@ describe('TradeService', () => {
       // The fill price IG actually confirmed, not the TradingView signal
       // price used to size the trade — orders are MARKET, so these can differ.
       expect(result.executedPrice).toBe(101.25);
+      // MARKET mode applies no tolerance — recording one would imply a
+      // protection that wasn't active.
+      expect(result.maxSlippagePercent).toBeNull();
       expect(tradingRulesService.resetFailureCount).toHaveBeenCalled();
     });
 
@@ -225,7 +228,7 @@ describe('TradeService', () => {
         level: 100,
       });
 
-      await service.executeTrade(input, mapping, null, {
+      const result = await service.executeTrade(input, mapping, null, {
         executionMode: ExecutionMode.SIGNAL_PRICE,
         maxSlippagePercent: 1,
       } as TradingRules);
@@ -234,6 +237,8 @@ describe('TradeService', () => {
       expect(igClientService.placeOrder).toHaveBeenCalledWith(
         expect.objectContaining({ orderType: 'LIMIT', level: 101 }),
       );
+      // The tolerance actually applied is recorded on the trade row.
+      expect(result.maxSlippagePercent).toBe(1);
     });
 
     it("a stock's own maxSlippagePercent overrides the global default independently of executionMode", async () => {

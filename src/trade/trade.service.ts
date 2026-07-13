@@ -97,6 +97,7 @@ export class TradeService {
       signalPrice: number;
       investmentAmount: number;
       quantity: number | null;
+      maxSlippagePercent: number | null;
       signalReceivedAt: Date;
     } = {
       tvTicker: input.tvTicker,
@@ -105,6 +106,9 @@ export class TradeService {
       signalPrice: input.signalPrice,
       investmentAmount,
       quantity: null,
+      // Only meaningful when a LIMIT level enforces it — null on MARKET
+      // trades so the history doesn't imply a protection that wasn't active.
+      maxSlippagePercent: executionMode === ExecutionMode.SIGNAL_PRICE ? maxSlippagePercent : null,
       signalReceivedAt: input.signalReceivedAt,
     };
 

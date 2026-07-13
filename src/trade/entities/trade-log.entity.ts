@@ -58,6 +58,20 @@ export class TradeLog {
   })
   executedPrice: number | null;
 
+  // The slippage tolerance actually applied to this trade's LIMIT level —
+  // recorded at execution time so the history survives later changes to the
+  // stock/global settings. Null when the trade ran in MARKET mode (no
+  // tolerance applies) or never reached execution.
+  @Column({
+    type: 'decimal',
+    precision: 5,
+    scale: 2,
+    nullable: true,
+    name: 'max_slippage_percent',
+    transformer: decimalTransformer,
+  })
+  maxSlippagePercent: number | null;
+
   @Column({ type: 'varchar', length: 100, nullable: true, name: 'deal_reference' })
   dealReference: string | null;
 
