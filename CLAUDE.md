@@ -38,6 +38,8 @@ The full project documentation lives at `.claude/PROJECT_DOCUMENTATION.md`. Read
 - All secrets from AWS Secrets Manager (Section 7). Nothing sensitive in .env.
 - No P&L is computed or stored anywhere in this backend, on purpose — a realized-P&L feature was built and then removed (see Section 19 Limitation 1). Don't reintroduce it without discussing it first.
 - Only one active session per account, enforced server-side (Section 5 Layer 4): every full login stamps a fresh `users.current_session_id` and revokes every other refresh token for that user; `JwtStrategy` rejects any request whose JWT carries a stale session id, even before that token's own expiry. See `SessionService.establishFullSession` and `JwtStrategy.validate`.
+- `POST /signal/test` (Section 9 "Dev Test Signal Endpoint") lets a logged-in portal user run a manual signal through the real pipeline for local testing, without waiting for TradingView. It's gated by `TestSignalsEnabledGuard`, which fails closed unless `ENABLE_TEST_SIGNALS=true` — never enable this in production; it places real IG orders exactly like the real webhook does.
+- The IG account is **spread betting (DFB)**, not CFD (Section 1, Section 15) — this was a correction after a real test signal hit `REJECT_CFD_ORDER_ON_SPREADBET_ACCOUNT`. `IgClientService.placeOrder`/`closePosition` send no `currencyCode` field (CFD-only) and use `expiry: 'DFB'` (not `'-'`). Don't reintroduce `currencyCode` or reference CFD-specific IG behavior without checking this first.
 
 ---
 
@@ -139,3 +141,4 @@ Trades involve real money. Correctness and safety are non-negotiable. When in do
 - Don't remove or reorder safety checks in the signal pipeline.
 - Don't add Vercel — frontend is Nginx/Cloudflare Pages.
 - Don't introduce multi-tenancy (single IG account in v1).
+- Don't set `ENABLE_TEST_SIGNALS=true` in production, and don't weaken `TestSignalsEnabledGuard`'s fail-closed default.

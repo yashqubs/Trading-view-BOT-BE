@@ -44,7 +44,7 @@ When a TradingView indicator fires a green (buy) or red (sell) signal, the bot a
 | Signal types | Binary only — BUY or SELL |
 | Chart interval | Daily (signals valid for the full trading day) |
 | Acceptable delay | 1 to 10 minutes between signal and execution |
-| Broker | IG — CFD accounts |
+| Broker | IG — Spread Betting account (Daily Funded Bets / "DFB") — not CFD. See Section 15 for the account-type-specific order fields. |
 | Markets traded | US equities only — NASDAQ and NYSE |
 | Testing phase | IG demo account first, then live |
 | Stock universe | Approximately 60 to 70 stocks |
@@ -555,6 +555,14 @@ Controls the price a trade actually fills at, independent of how quantity is siz
 
 **What happens when a SIGNAL_PRICE limit order can't fill immediately — this is a deliberate scope decision, not a gap to fill in later:** this app does **not** track resting/working orders. If IG's `/positions/otc` LIMIT order doesn't fill straight away, it is handled exactly like a rejected market order — logged `FAILED` with whatever reason IG gives, and that's the end of it. There is no pending state, no polling for a later fill, no automatic cancellation timer. If real-world testing on IG demo shows this isn't the desired behaviour (e.g. you'd rather the order rest and fill later within the signal's acceptable-delay window), that's a bigger feature — a working-order lifecycle — and should be scoped separately rather than assumed.
 
+### Dev Test Signal Endpoint (Manual Bypass)
+
+`POST /signal/test` (`SignalController`) lets a logged-in portal user run the exact same 11-step condition pipeline used by the real webhook, without waiting for TradingView. Body: `{ tvTicker, direction, price }` — no `secret` field (portal-session auth via `JwtAuthGuard` instead). Unlike the real webhook it's `await`ed and returns the resulting `trade_log` row directly, since there's no 3-second TradingView timeout to respect and immediate feedback is the point.
+
+**Gating — fails closed:** guarded by `JwtAuthGuard` + `TestSignalsEnabledGuard`, which only passes when `ENABLE_TEST_SIGNALS` is the exact string `'true'`. Unset or any other value → `403 Test signals are disabled`. This must stay unset (or `false`) everywhere except local dev — it's not a sandbox: it runs the real pipeline and, if the conditions pass, places a **real IG order** (demo account by default per `IG_BASE_URL`, but a real one if that's ever pointed at the live API). `GET /system/status` exposes the resolved flag as `testSignalsEnabled` so the portal can show/hide the "Send test signal" button per environment.
+
+The portal surfaces this as a flask icon next to each stock (Stocks list row, and the stock's own detail page) — only rendered when `testSignalsEnabled` is true.
+
 ---
 
 ## 10. Backend — NestJS
@@ -568,12 +576,12 @@ Controls the price a trade actually fills at, independent of how quantity is siz
 | SecretsModule | Fetches secrets from AWS Secrets Manager at boot |
 | IGClientModule | IG API session + all IG calls |
 | WebhookModule | Receives signals with IP + secret validation |
-| SignalModule | Condition pipeline orchestration |
+| SignalModule | Condition pipeline orchestration + dev-only `POST /signal/test` manual bypass |
 | TradingRulesModule | Global conditions CRUD |
 | MappingModule | Stock mapping CRUD + IG market search |
 | TradeModule | Trade execution + logging |
 | StatsModule | Aggregated and per-stock statistics |
-| SystemModule | Webhook URL, IG connection status, last-received-signal status |
+| SystemModule | Webhook URL, IG connection status, last-received-signal status, test-signals-enabled flag |
 | RealtimeModule | WebSocket gateway — pushes live updates to the portal |
 | HealthModule | Unauthenticated `GET /health` — DB connectivity check for uptime monitoring / deploy verification |
 | SchedulerModule | Token refresh + nightly backup cron |
@@ -832,7 +840,9 @@ Body: identifier (username), password. Returns CST and X-SECURITY-TOKEN in respo
 Returns array of markets, each with: epic, instrumentName, instrumentType, marketStatus, bid, offer. Can return multiple results — user selects correct one in the portal.
 
 **4. Place Position (POST /positions/otc, v2)**
-Body: epic, direction (BUY/SELL), size (quantity), orderType (MARKET by default, or LIMIT — see Section 9 "Execution Mode"), `level` (signal price, only when orderType is LIMIT), currencyCode (GBP), forceOpen (true), guaranteedStop (false), expiry (-). Returns dealReference.
+Body: epic, direction (BUY/SELL), size (quantity), orderType (MARKET by default, or LIMIT — see Section 9 "Execution Mode"), `level` (signal price, only when orderType is LIMIT), forceOpen (true), guaranteedStop (false), expiry (`'DFB'`). Returns dealReference.
+
+> **Spread bet account — no `currencyCode` field.** This account is a spread-betting account (Section 1), not CFD. `currencyCode` is CFD-only; sending it here gets the order rejected with `REJECT_CFD_ORDER_ON_SPREADBET_ACCOUNT`, which is exactly the error that surfaced this and prompted the fix. `expiry` is the literal string `'DFB'` (Daily Funded Bet — the non-expiring spread-bet product, the spread-bet equivalent of a CFD's open-ended position), not `'-'`.
 
 **5. Confirm Deal (GET /confirms/{dealReference}, v1)**
 Returns dealId, dealStatus (ACCEPTED/REJECTED), status (OPEN/CLOSED), and `level` — the actual fill price, stored as `trade_log.executed_price`. Always call after placing.
@@ -841,16 +851,18 @@ Returns dealId, dealStatus (ACCEPTED/REJECTED), status (OPEN/CLOSED), and `level
 Returns array of positions with position.dealId, position.size, position.direction, market.epic, market.instrumentName. Used for all position checks.
 
 **7. Close Position (DELETE /positions/otc, v1)**
-Body: dealId, direction (opposite of open), size, orderType (MARKET by default, or LIMIT — same Execution Mode setting as opening a position), `level` (only when LIMIT), expiry (-). Used when a SELL signal closes an existing long position.
+Body: dealId, direction (opposite of open), size, orderType (MARKET by default, or LIMIT — same Execution Mode setting as opening a position), `level` (only when LIMIT), expiry (`'DFB'`). Used when a SELL signal closes an existing long position.
 
 ### IG Epic Code Structure
 
+Epic prefixes vary by account type and market — the table below is illustrative, not authoritative. The app never hardcodes or parses epic segments; `MappingService.searchMarkets` just passes through whatever `/markets` search returns for the epic actually connected, so it stays correct regardless of prefix. Example observed on this spread-bet account: `UB.D.INTC.DAILY.IP` — a different first segment than the CFD-oriented example below.
+
 | Segment | Example | Meaning |
 |---|---|---|
-| 1 | CS | CFD Share (IX=Index, RC=Commodity, CC=Crypto) |
+| 1 | CS / UB / etc. | Product type code — varies by account type (CFD vs spread bet) and market; do not assume a fixed value |
 | 2 | D | Daily funded (rolling) |
 | 3 | AAPL | Underlying asset |
-| 4 | CASH | Spot/cash (not future) |
+| 4 | CASH / DAILY | Spot/cash or daily-funded variant |
 | 5 | IP | IG platform code |
 
 ### IG Rate Limits

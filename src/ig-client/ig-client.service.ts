@@ -119,6 +119,11 @@ export class IgClientService {
     return this.request<IgMarket>({ method: 'GET', url: `/markets/${epic}`, version: 3 });
   }
 
+  // Spread bet account (see PROJECT_DOCUMENTATION.md Section 1) — no
+  // currencyCode field (that's CFD-only; IG rejects it on a spread-bet
+  // account with REJECT_CFD_ORDER_ON_SPREADBET_ACCOUNT) and expiry is 'DFB'
+  // (Daily Funded Bet — the standard non-expiring spread bet product,
+  // functionally equivalent to a CFD's open-ended position).
   async placeOrder(params: PlaceOrderParams): Promise<PlaceOrderResult> {
     await this.ensureSession();
     const orderType = params.orderType ?? 'MARKET';
@@ -132,10 +137,9 @@ export class IgClientService {
         size: params.size,
         orderType,
         ...(orderType === 'LIMIT' ? { level: params.level } : {}),
-        currencyCode: 'GBP',
         forceOpen: true,
         guaranteedStop: false,
-        expiry: '-',
+        expiry: 'DFB',
       },
     });
   }
@@ -187,7 +191,7 @@ export class IgClientService {
         size: params.size,
         orderType,
         ...(orderType === 'LIMIT' ? { level: params.level } : {}),
-        expiry: '-',
+        expiry: 'DFB',
       },
     });
   }

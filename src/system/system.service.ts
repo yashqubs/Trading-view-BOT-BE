@@ -19,6 +19,7 @@ export class SystemService {
       igConnected: this.igClientService.isSessionActive(),
       igSessionExpiresAt: this.igClientService.getSessionExpiresAt(),
       lastSignalReceivedAt: await this.tradeService.getLastSignalReceivedAt(),
+      testSignalsEnabled: this.configService.get<string>('ENABLE_TEST_SIGNALS') === 'true',
     };
   }
 }
