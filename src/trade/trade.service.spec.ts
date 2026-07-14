@@ -392,7 +392,16 @@ describe('TradeService', () => {
       );
     });
 
-    it('normalizes a points-scale fill price on a MARKET order without calling getMarketDetails', async () => {
+    it('normalizes a points-scale fill price on a MARKET order using the live-quote factor', async () => {
+      igClientService.getMarketDetails.mockResolvedValue({
+        snapshot: {
+          marketStatus: 'TRADEABLE',
+          bid: 10015,
+          offer: 10020, // points market — factor 100 vs the $100 signal
+          decimalPlacesFactor: 1,
+          scalingFactor: 1,
+        },
+      });
       igClientService.placeOrder.mockResolvedValue({ dealReference: 'REF-1i' });
       igClientService.confirmDeal.mockResolvedValue({
         dealId: 'DEAL-1i',
@@ -404,8 +413,38 @@ describe('TradeService', () => {
 
       const result = await service.executeTrade(input, mapping, null, rules);
 
-      expect(igClientService.getMarketDetails).not.toHaveBeenCalled();
+      // MARKET order still goes out with no level attached…
+      expect(igClientService.placeOrder).toHaveBeenCalledWith(
+        expect.objectContaining({ orderType: 'MARKET' }),
+      );
+      // …but the fill comes back in points and is stored on the signal scale.
       expect(result.executedPrice).toBe(101.25);
+    });
+
+    it('logs FAILED without calling IG when the signal price is implausibly far from the live market', async () => {
+      // Live PayPal case 2026-07-14: market ~4687 points ($46.87), test signal
+      // price 1000 — traded before this guard existed and corrupted quantity,
+      // invested amount, executed price, and the slippage ceiling at once.
+      igClientService.getMarketDetails.mockResolvedValue({
+        snapshot: {
+          marketStatus: 'TRADEABLE',
+          bid: 4685,
+          offer: 4687,
+          decimalPlacesFactor: 1,
+          scalingFactor: 1,
+        },
+      });
+
+      const result = await service.executeTrade(
+        { ...input, signalPrice: 1000 },
+        mapping,
+        null,
+        rules,
+      );
+
+      expect(result.status).toBe(TradeStatus.FAILED);
+      expect(result.errorMessage).toContain('implausible');
+      expect(igClientService.placeOrder).not.toHaveBeenCalled();
     });
 
     it('logs FAILED when the live quote needed for a LIMIT level is unavailable', async () => {
@@ -425,7 +464,7 @@ describe('TradeService', () => {
       } as TradingRules);
 
       expect(result.status).toBe(TradeStatus.FAILED);
-      expect(result.errorMessage).toBe('NO_LIVE_QUOTE_FOR_LIMIT_LEVEL');
+      expect(result.errorMessage).toBe('NO_LIVE_QUOTE');
       expect(igClientService.placeOrder).not.toHaveBeenCalled();
     });
 

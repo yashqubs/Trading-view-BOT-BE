@@ -17,7 +17,7 @@ import { SignalInput } from './interfaces/signal-input.interface';
 import { TradeLogSummary } from './interfaces/trade-log-summary.interface';
 import { calculateLimitLevel } from './utils/calculate-limit-level.util';
 import { calculateQuantity } from './utils/calculate-quantity.util';
-import { derivePriceScaleFactor, normalizeIgPrice } from './utils/ig-price-scale.util';
+import { assertSignalPricePlausible, derivePriceScaleFactor } from './utils/ig-price-scale.util';
 
 export interface PaginatedTradeLogs {
   items: TradeLog[];
@@ -116,11 +116,33 @@ export class TradeService {
       const quantity = calculateQuantity(investmentAmount, input.signalPrice);
       baseLog.quantity = quantity;
 
+      // Every trade (MARKET included) is anchored to IG's live quote before
+      // any order goes out: the signal price must resemble the real market
+      // (assertSignalPricePlausible — quantity, invested amount, and the
+      // slippage ceiling are all computed from it, so an implausible price
+      // corrupts everything downstream), and the derived power-of-ten factor
+      // converts between the signal scale and IG's points scale.
+      const details = await this.igClientService.getMarketDetails(mapping.igEpic);
+      const reference =
+        input.direction === Direction.BUY ? details.snapshot?.offer : details.snapshot?.bid;
+      if (reference == null || reference <= 0) {
+        throw new IgApiException('NO_LIVE_QUOTE');
+      }
+      const priceScaleFactor = derivePriceScaleFactor(reference, input.signalPrice);
+      assertSignalPricePlausible(reference, input.signalPrice, priceScaleFactor);
+
       const igOrderParams =
         executionMode === ExecutionMode.SIGNAL_PRICE
           ? {
               orderType: 'LIMIT' as const,
-              level: await this.resolveLimitLevel(input, mapping.igEpic, maxSlippagePercent),
+              level: this.roundToMarketPrecision(
+                calculateLimitLevel(
+                  input.signalPrice * priceScaleFactor,
+                  input.direction,
+                  maxSlippagePercent,
+                ),
+                details.snapshot.decimalPlacesFactor,
+              ),
             }
           : { orderType: 'MARKET' as const };
 
@@ -160,12 +182,11 @@ export class TradeService {
           status: TradeStatus.SUCCESS,
           dealReference,
           dealId: confirmation.dealId,
-          // IG confirms in its own points scale; store on the signal-price
-          // scale so executed_price is comparable to signal_price everywhere.
-          executedPrice:
-            confirmation.level != null
-              ? normalizeIgPrice(confirmation.level, input.signalPrice)
-              : null,
+          // IG confirms in its own points scale; convert back with the factor
+          // derived from the live quote (not from the fill-vs-signal ratio,
+          // which a bad signal price would distort) so executed_price is
+          // comparable to signal_price everywhere.
+          executedPrice: confirmation.level != null ? confirmation.level / priceScaleFactor : null,
           executedAt: new Date(),
         }),
       );
@@ -179,37 +200,9 @@ export class TradeService {
     }
   }
 
-  /**
-   * The LIMIT level for SIGNAL_PRICE mode, in IG's own quote scale. The
-   * signal price is in dollars but IG quotes US share DFBs in points
-   * (1 point = 1 cent — see derivePriceScaleFactor), so the level must be
-   * scaled onto IG's quote before applying the slippage tolerance; sending
-   * dollar levels raw made every LIMIT order fail
-   * LIMIT_ORDER_WRONG_SIDE_OF_MARKET. The live quote side we'd trade against
-   * (offer for BUY, bid for SELL) anchors the scale derivation. Any failure
-   * here (market details unavailable, no live quote) throws and logs FAILED —
-   * never guess a price scale on a real-money order.
-   */
-  private async resolveLimitLevel(
-    input: SignalInput,
-    igEpic: string,
-    maxSlippagePercent: number,
-  ): Promise<number> {
-    const details = await this.igClientService.getMarketDetails(igEpic);
-    const reference =
-      input.direction === Direction.BUY ? details.snapshot?.offer : details.snapshot?.bid;
-    if (reference == null || reference <= 0) {
-      throw new IgApiException('NO_LIVE_QUOTE_FOR_LIMIT_LEVEL');
-    }
-    const factor = derivePriceScaleFactor(reference, input.signalPrice);
-    const level = calculateLimitLevel(
-      input.signalPrice * factor,
-      input.direction,
-      maxSlippagePercent,
-    );
-    // IG rejects levels more precise than the market's own quote precision
-    // (decimalPlacesFactor — GOOG quotes 1dp, calculateLimitLevel rounds 2dp).
-    const decimalPlaces = details.snapshot.decimalPlacesFactor;
+  // IG rejects levels more precise than the market's own quote precision
+  // (decimalPlacesFactor — GOOG quotes 1dp, calculateLimitLevel rounds 2dp).
+  private roundToMarketPrecision(level: number, decimalPlaces: number | null): number {
     return decimalPlaces != null && decimalPlaces >= 0
       ? Number(level.toFixed(decimalPlaces))
       : level;

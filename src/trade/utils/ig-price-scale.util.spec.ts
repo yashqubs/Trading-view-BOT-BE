@@ -1,5 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
-import { derivePriceScaleFactor, normalizeIgPrice } from './ig-price-scale.util';
+import { assertSignalPricePlausible, derivePriceScaleFactor } from './ig-price-scale.util';
 
 describe('derivePriceScaleFactor', () => {
   it('derives 100 for a US share DFB quoting in cents-as-points (live GOOG case)', () => {
@@ -29,13 +29,32 @@ describe('derivePriceScaleFactor', () => {
   });
 });
 
-describe('normalizeIgPrice', () => {
-  it('converts a points fill back onto the signal-price scale', () => {
-    // HOOD live case: IG confirmed level 11157 for a $110.89 signal → $111.57.
-    expect(normalizeIgPrice(11157, 110.89)).toBe(111.57);
+describe('assertSignalPricePlausible', () => {
+  it('passes a signal price matching the live market (points-quoted)', () => {
+    // GOOG live: offer 35311, signal $352.76, factor 100 → 0.1% deviation.
+    expect(() => assertSignalPricePlausible(35311, 352.76, 100)).not.toThrow();
   });
 
-  it('passes a same-scale fill through unchanged', () => {
-    expect(normalizeIgPrice(101.25, 100)).toBe(101.25);
+  it('passes a genuine market move within the tolerance', () => {
+    // 8% gap — legitimate fast market / webhook latency.
+    expect(() => assertSignalPricePlausible(38100, 352.76, 100)).not.toThrow();
+  });
+
+  it('rejects a fat-fingered price far from the real market (live PayPal case)', () => {
+    // PayPal live 2026-07-14: IG ~4687 points ($46.87), test signal price 1000.
+    // The ratio (4.687) snapped the factor to 10, scaling the signal to
+    // 10000 vs a 4687 market — 113% off. This traded before the guard existed
+    // and corrupted quantity, invested amount, and executed price at once.
+    const factor = derivePriceScaleFactor(4687, 1000);
+    expect(() => assertSignalPricePlausible(4687, 1000, factor)).toThrow(BadRequestException);
+    expect(() => assertSignalPricePlausible(4687, 1000, factor)).toThrow(/implausible/);
+  });
+
+  it('rejects when the ratio falls between powers of ten (wrongly-snapped factor)', () => {
+    // Ratio ~31.6 (midway between 10 and 100) — whichever factor is chosen,
+    // the residual deviation is ~58%+ and must fail.
+    expect(() => assertSignalPricePlausible(3160, 100, derivePriceScaleFactor(3160, 100))).toThrow(
+      BadRequestException,
+    );
   });
 });
