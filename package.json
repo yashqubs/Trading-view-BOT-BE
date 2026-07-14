@@ -26,6 +26,7 @@
     "migration:revert": "ts-node -r tsconfig-paths/register src/database/revert-migration.ts",
     "seed": "ts-node -r tsconfig-paths/register src/database/seeds/seed.ts",
     "clear-db": "ts-node -r tsconfig-paths/register src/database/clear-db.ts",
+    "clear-trades": "ts-node -r tsconfig-paths/register src/database/clear-trades.ts",
     "remove-stock": "ts-node -r tsconfig-paths/register src/database/remove-stock.ts"
   },
   "dependencies": {
