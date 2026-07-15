@@ -10,6 +10,7 @@ import { IgApiException } from './ig-api.exception';
 import {
   ClosePositionParams,
   ConfirmDealResult,
+  IgDebugEntry,
   IgMarket,
   IgMarketDetails,
   IgPosition,
@@ -47,6 +48,28 @@ interface IgPositionsResponse {
 export class IgClientService {
   private readonly logger = new Logger(IgClientService.name);
   private session: IgSession | null = null;
+
+  // Dev-only raw request/response capture for the test-signal endpoint (see
+  // Section 9 "Dev Test Signal Endpoint" + startRecording doc below) — null
+  // means "not recording," so normal webhook trades never pay any cost here.
+  private debugRecorder: IgDebugEntry[] | null = null;
+
+  /** Starts capturing every raw IG HTTP exchange from here until
+   * stopRecording() is called. Always resets to an empty list, even if a
+   * previous recording was left running — safe because this is only ever
+   * driven by one awaited test-signal request at a time (single PM2 fork
+   * instance, JwtAuthGuard-protected, dev-only), so overlap would at worst
+   * mix debug output, never corrupt a real trade. */
+  startRecording(): void {
+    this.debugRecorder = [];
+  }
+
+  /** Stops capturing and returns everything recorded since startRecording(). */
+  stopRecording(): IgDebugEntry[] {
+    const entries = this.debugRecorder ?? [];
+    this.debugRecorder = null;
+    return entries;
+  }
 
   constructor(
     private readonly httpService: HttpService,
@@ -252,15 +275,19 @@ export class IgClientService {
       },
     };
 
+    const startedAt = Date.now();
     for (let attempt = 1; attempt <= MAX_REQUEST_ATTEMPTS; attempt++) {
       try {
         const response = await firstValueFrom(this.httpService.request<T>(config));
+        this.recordDebugEntry(config, options.version, startedAt, response.data);
         return response.data;
       } catch (error) {
         const status = (error as AxiosError).response?.status;
         const isRetryable = status !== undefined && RETRYABLE_STATUS_CODES.has(status);
         if (!isRetryable || attempt === MAX_REQUEST_ATTEMPTS) {
-          throw this.toIgApiException(error);
+          const igError = this.toIgApiException(error);
+          this.recordDebugEntry(config, options.version, startedAt, undefined, igError.errorCode);
+          throw igError;
         }
         this.logger.warn(
           `IG API ${options.method} ${options.url} failed with ${status}, retrying (attempt ${attempt}/${MAX_REQUEST_ATTEMPTS})`,
@@ -272,6 +299,31 @@ export class IgClientService {
     // Unreachable — the loop above always either returns or throws — but
     // keeps the function's return type honest for TypeScript.
     throw new IgApiException('UNKNOWN_ERROR');
+  }
+
+  // Records the actual wire-level method (e.g. POST + _method: DELETE for a
+  // close-position call, not the logical "DELETE") — that distinction is
+  // exactly the kind of IG quirk this debug view exists to surface.
+  private recordDebugEntry(
+    config: AxiosRequestConfig,
+    version: number,
+    startedAt: number,
+    responseBody?: unknown,
+    errorCode?: string,
+  ): void {
+    if (!this.debugRecorder) {
+      return;
+    }
+    this.debugRecorder.push({
+      method: config.method as string,
+      url: config.url as string,
+      version,
+      requestBody: config.data ?? null,
+      responseBody,
+      errorCode,
+      durationMs: Date.now() - startedAt,
+      timestamp: new Date().toISOString(),
+    });
   }
 
   private delay(ms: number): Promise<void> {

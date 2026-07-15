@@ -60,7 +60,7 @@ When a TradingView indicator fires a green (buy) or red (sell) signal, the bot a
 6.  Bot checks global trading rules (enabled? daily limits?)
 7.  Bot looks up ticker in mapping table → IG Epic code
 8.  Bot checks per-stock conditions (enabled? daily spend cap?)
-9.  Bot calculates quantity = floor(investment amount ÷ signal price) — whole shares only
+9.  Bot calculates size = floor(investment amount ÷ price-in-points × 100) / 100 — a £/point stake, not a share count (Section 9 "Investment Amount")
 10. Bot calls IG REST API to place the trade
 11. IG executes and returns deal reference
 12. Bot confirms deal and logs result to database
@@ -481,8 +481,8 @@ Local development still uses `.env` for everything with `SECRETS_SOURCE=local` (
 | direction | VARCHAR(4) | BUY or SELL |
 | signal_price | DECIMAL(12,4) | From TradingView — used only to size the trade, not an execution price |
 | executed_price | DECIMAL(12,4), Nullable | Actual IG fill price (`confirmDeal`'s `level`). Orders are MARKET not LIMIT, so this can differ from signal_price. Null unless status = SUCCESS |
-| investment_amount | DECIMAL(12,2), Nullable | |
-| quantity | DECIMAL(12,4), Nullable | floor(amount ÷ price) — whole shares only since 2026-07-13; column keeps 4dp precision for older rows created before this change |
+| trade_value | DECIMAL(12,2), Nullable | Renamed from `investment_amount` 2026-07-15. The REAL £ notional actually committed (size × price-in-points) for a BUY that reached a computed size. Always NULL for SELL (closing a position is never a new investment) and for any BUY that never got that far (skipped/failed before sizing) |
+| size | DECIMAL(12,4), Nullable | Renamed from `quantity` 2026-07-15. IG's `size` — a £-per-point stake for BUY (see `calculateSize`), or the exact size of the position being closed for SELL. NOT a share count, despite the old column name implying one |
 | deal_reference | VARCHAR(100), Nullable | IG temp ref |
 | deal_id | VARCHAR(100), Nullable | IG permanent ID |
 | status | VARCHAR(30) | See status list |
@@ -521,7 +521,7 @@ When a signal arrives, conditions are checked in sequence. The first failure sto
 6.  daily total investment OK?     → NO → DAILY_TOTAL_LIMIT
 7.  stock daily spend OK?          → NO → STOCK_DAILY_LIMIT
 8.  SELL has open position?        → NO → NO_POSITION
-9.  calculate quantity, execute
+9.  calculate size, execute
 10. log SUCCESS or FAILED
 11. if FAILED: increment failure counter; auto-pause if threshold hit
 ```
@@ -536,9 +536,21 @@ Investment amount, max daily spend per stock, and a per-stock trading on/off swi
 
 ### Investment Amount — Global Default vs. Per-Stock Override
 
-Quantity is always `Math.floor(investment_amount / signal_price)` — whole shares only, rounded down so the actual spend never exceeds `investment_amount` (see step 9 above and Section 15 IG endpoints). If that floors to zero (investment amount too small to buy even one share at this price), the trade fails safely and logs `FAILED` rather than placing a zero-size order. Which `investment_amount` that is follows the same override pattern as execution mode and slippage below:
+**Sizing model corrected 2026-07-15 — IG's `size` is a £-per-point stake, NOT a share count.** This was proven live: closing a size-1 GOOG position after a 2-point move paid exactly £2 profit, and a size-0.24 PayPal position moving 12.2 points cost £2.93 (0.24 × 12.2 = 2.928). The original shares model (`quantity = floor(investment / signalPrice)`) sent orders roughly 100x too large whenever a realistic signal price was used — a live PayPal test intending £2,000 of exposure actually opened ~£90,000+.
 
-**Resolution order:** `stock_mapping.investment_amount` (if not NULL) overrides `trading_rules.investment_amount` (the global default) for that specific stock — resolved by `resolveInvestmentAmount()` (`mapping/utils/resolve-investment-amount.util.ts`), used everywhere a trade amount is needed: quantity sizing (`TradeService.executeTrade`), the daily-total-investment check (step 6), and the per-stock daily-spend check (step 7). The resolved amount is what actually gets logged to `trade_log.investment_amount`, never the raw (possibly NULL) per-stock column. Unlike the daily caps, the global default itself is never NULL — there's no meaningful "no investment amount" state. Set globally on the Conditions page ("Investment" card); overridden per-stock from the stock's own detail/edit page ("Override investment per trade for TICKER").
+The correct formula, in `TradeService.executeTrade` via `calculateSize()` (`trade/utils/calculate-size.util.ts`):
+```
+size = floor((investment_amount / price_in_points) × 100) / 100
+```
+`price_in_points` is the signal price scaled onto IG's own quote (see Section 9 "Price scaling" below) — never the raw signal price. Floored to 2 decimal places so the real notional (`size × price_in_points`) never exceeds the configured investment amount. Only computed for BUY; a SELL always uses the existing position's own size (closing it, not sizing a new one).
+
+**Minimum deal size (fail-safe):** IG enforces a real minimum `size` per instrument (`dealingRules.minDealSize`, fetched live from `GET /markets/{epic}` — confirmed 0.24 for PayPal/GOOG via a live rejection: `MINIMUM_ORDER_SIZE_ERROR` below it, accepted at it). If the computed size is positive but below this minimum, the trade fails safely (`FAILED`, message states the approximate minimum investment in £) rather than placing an undersized order or silently rounding up to spend more than configured. If the computed size floors to zero or less, `calculateSize()` itself throws before any IG call.
+
+Which `investment_amount` (the *input*, not the trade's realized `trade_value`) is used follows the same override pattern as execution mode and slippage below:
+
+**Resolution order:** `stock_mapping.investment_amount` (if not NULL) overrides `trading_rules.investment_amount` (the global default) for that specific stock — resolved by `resolveInvestmentAmount()` (`mapping/utils/resolve-investment-amount.util.ts`), used everywhere a trade amount is needed: sizing (`TradeService.executeTrade`), the daily-total-investment check (step 6), and the per-stock daily-spend check (step 7). Unlike the daily caps, the global default itself is never NULL — there's no meaningful "no investment amount" state. Set globally on the Conditions page ("Investment" card); overridden per-stock from the stock's own detail/edit page ("Override investment per trade for TICKER").
+
+**`trade_log.trade_value` is NOT this input — it's the real computed outcome.** Storing the raw configured input regardless of what actually happened on IG was misleading (the £2,000/£90,000 PayPal case above). `trade_value` is null until a BUY successfully computes a size past the minimum-deal-size check, and always null for SELL.
 
 **Validation:** `max_daily_spend` must exceed whichever investment amount will actually apply — `MappingService` resolves the effective amount (per-stock override, or the current global default) before checking this, both on create and on update.
 
@@ -572,6 +584,8 @@ Controls the price a trade actually fills at, independent of how quantity is siz
 **Gating — fails closed:** guarded by `JwtAuthGuard` + `TestSignalsEnabledGuard`, which only passes when `ENABLE_TEST_SIGNALS` is the exact string `'true'`. Unset or any other value → `403 Test signals are disabled`. This must stay unset (or `false`) everywhere except local dev — it's not a sandbox: it runs the real pipeline and, if the conditions pass, places a **real IG order** (demo account by default per `IG_BASE_URL`, but a real one if that's ever pointed at the live API). `GET /system/status` exposes the resolved flag as `testSignalsEnabled` so the portal can show/hide the "Send test signal" button per environment.
 
 The portal surfaces this as a flask icon next to each stock (Stocks list row, and the stock's own detail page) — only rendered when `testSignalsEnabled` is true.
+
+**Raw IG exchange (`igDebug`):** the response also includes `igDebug: IgDebugEntry[]` — every raw HTTP call made to IG for this one signal (method, url, version, request body, response body or error code, duration), captured via `IgClientService.startRecording()`/`stopRecording()` around the `processSignal()` call in `SignalController`. Empty if the signal was skipped before reaching IG. Headers (CST, X-SECURITY-TOKEN, API key) are deliberately never captured — only bodies. This exists because documentation and even IG's own support chatbot gave confidently wrong answers about size/points semantics during development (2026-07-14/15) — seeing the exact bytes exchanged with IG settled it, and the portal now exposes that same view for any future question instead of needing another one-off diagnostic script. Only wired into the test endpoint; the real webhook path never records.
 
 ---
 
@@ -850,7 +864,7 @@ Body: identifier (username), password. Returns CST and X-SECURITY-TOKEN in respo
 Returns array of markets, each with: epic, instrumentName, instrumentType, marketStatus, bid, offer. Can return multiple results — user selects correct one in the portal.
 
 **4. Place Position (POST /positions/otc, v2)**
-Body: epic, direction (BUY/SELL), size (quantity), orderType (MARKET by default, or LIMIT — see Section 9 "Execution Mode"), `level` (signal price, only when orderType is LIMIT), forceOpen (true), guaranteedStop (false), expiry (`'DFB'`). Returns dealReference.
+Body: epic, direction (BUY/SELL), size (a £-per-point stake, NOT a share count — see `calculateSize` in Section 9 "Investment Amount"), orderType (MARKET by default, or LIMIT — see Section 9 "Execution Mode"), `level` (scaled signal price in IG's points, only when orderType is LIMIT), forceOpen (true), guaranteedStop (false), expiry (`'DFB'`). Returns dealReference.
 
 > **Spread bet account (Section 1), not CFD.** `expiry` must be the literal string `'DFB'` (Daily Funded Bet — the non-expiring spread-bet product, the spread-bet equivalent of a CFD's open-ended position) — `'-'` is CFD-only and gets the order rejected with `REJECT_CFD_ORDER_ON_SPREADBET_ACCOUNT`. `currencyCode` **is still required** on this endpoint regardless of account type — omitting it 400s with `validation.null-not-allowed.request.currencyCode`. (An earlier version of this doc said to drop `currencyCode` too; that was wrong — `expiry` was the actual fix for the CFD rejection, confirmed by testing both against the real IG demo account.)
 
@@ -883,7 +897,7 @@ Epic prefixes vary by account type and market — the table below is illustrativ
 
 ### Confirmed Constraint
 
-No price data is available for shares on the IG API. Quantity is calculated from the TradingView signal price, not IG. Live P&L must be viewed on the IG platform directly.
+No price data is available for shares on the IG API in dollar terms — the signal price is TradingView's, and IG's own live quote (fetched per trade) is only used to derive the points scale factor and validate plausibility, not as the sizing input. Size is calculated from the TradingView signal price via that scale factor, not from IG's price directly. Live P&L must be viewed on the IG platform directly.
 
 ---
 

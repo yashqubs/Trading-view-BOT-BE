@@ -16,7 +16,7 @@ import { TradeLog } from './entities/trade-log.entity';
 import { SignalInput } from './interfaces/signal-input.interface';
 import { TradeLogSummary } from './interfaces/trade-log-summary.interface';
 import { calculateLimitLevel } from './utils/calculate-limit-level.util';
-import { calculateQuantity } from './utils/calculate-quantity.util';
+import { calculateSize } from './utils/calculate-size.util';
 import { assertSignalPricePlausible, derivePriceScaleFactor } from './utils/ig-price-scale.util';
 
 export interface PaginatedTradeLogs {
@@ -87,16 +87,17 @@ export class TradeService {
       input.maxSlippagePercentOverride ?? mapping.maxSlippagePercent ?? rules.maxSlippagePercent,
     );
 
-    // quantity starts null — calculateQuantity() can throw (e.g. investment
-    // amount too small to buy a whole share at this price), and that must
-    // still produce a logged FAILED row, not vanish before baseLog exists.
+    // size and tradeValue start null — both can fail to resolve (implausible
+    // signal price, no live quote, below IG's minimum deal size), and that
+    // must still produce a logged FAILED row, not vanish before baseLog
+    // exists.
     const baseLog: {
       tvTicker: string;
       igEpic: string;
       direction: Direction;
       signalPrice: number;
-      investmentAmount: number;
-      quantity: number | null;
+      tradeValue: number | null;
+      size: number | null;
       maxSlippagePercent: number | null;
       signalReceivedAt: Date;
     } = {
@@ -104,8 +105,8 @@ export class TradeService {
       igEpic: mapping.igEpic,
       direction: input.direction,
       signalPrice: input.signalPrice,
-      investmentAmount,
-      quantity: null,
+      tradeValue: null,
+      size: null,
       // Only meaningful when a LIMIT level enforces it — null on MARKET
       // trades so the history doesn't imply a protection that wasn't active.
       maxSlippagePercent: executionMode === ExecutionMode.SIGNAL_PRICE ? maxSlippagePercent : null,
@@ -113,15 +114,12 @@ export class TradeService {
     };
 
     try {
-      const quantity = calculateQuantity(investmentAmount, input.signalPrice);
-      baseLog.quantity = quantity;
-
       // Every trade (MARKET included) is anchored to IG's live quote before
       // any order goes out: the signal price must resemble the real market
-      // (assertSignalPricePlausible — quantity, invested amount, and the
-      // slippage ceiling are all computed from it, so an implausible price
-      // corrupts everything downstream), and the derived power-of-ten factor
-      // converts between the signal scale and IG's points scale.
+      // (assertSignalPricePlausible — sizing, trade value, and the slippage
+      // ceiling are all computed from it, so an implausible price corrupts
+      // everything downstream), and the derived power-of-ten factor converts
+      // between the signal scale and IG's points scale.
       const details = await this.igClientService.getMarketDetails(mapping.igEpic);
       const reference =
         input.direction === Direction.BUY ? details.snapshot?.offer : details.snapshot?.bid;
@@ -130,17 +128,35 @@ export class TradeService {
       }
       const priceScaleFactor = derivePriceScaleFactor(reference, input.signalPrice);
       assertSignalPricePlausible(reference, input.signalPrice, priceScaleFactor);
+      const pricePoints = input.signalPrice * priceScaleFactor;
+
+      let size: number;
+      if (input.direction === Direction.SELL) {
+        if (!existingPosition) {
+          throw new IgApiException('NO_POSITION_AT_EXECUTION');
+        }
+        // Closing a position is never a new investment — tradeValue stays
+        // null (see the entity comment); size is whatever the position is.
+        size = existingPosition.size;
+      } else {
+        size = calculateSize(investmentAmount, pricePoints);
+        const minDealSize = details.dealingRules?.minDealSize?.value;
+        if (minDealSize != null && size < minDealSize) {
+          const minInvestment = minDealSize * pricePoints;
+          throw new BadRequestException(
+            `Investment amount is too small — IG's minimum for ${mapping.tvTicker} at the current price is approximately £${minInvestment.toFixed(2)}`,
+          );
+        }
+        baseLog.tradeValue = Number((size * pricePoints).toFixed(2));
+      }
+      baseLog.size = size;
 
       const igOrderParams =
         executionMode === ExecutionMode.SIGNAL_PRICE
           ? {
               orderType: 'LIMIT' as const,
               level: this.roundToMarketPrecision(
-                calculateLimitLevel(
-                  input.signalPrice * priceScaleFactor,
-                  input.direction,
-                  maxSlippagePercent,
-                ),
+                calculateLimitLevel(pricePoints, input.direction, maxSlippagePercent),
                 details.snapshot.decimalPlacesFactor,
               ),
             }
@@ -149,13 +165,10 @@ export class TradeService {
       let dealReference: string;
 
       if (input.direction === Direction.SELL) {
-        if (!existingPosition) {
-          throw new IgApiException('NO_POSITION_AT_EXECUTION');
-        }
         const result = await this.igClientService.closePosition({
-          dealId: existingPosition.dealId,
+          dealId: existingPosition!.dealId,
           direction: Direction.SELL,
-          size: existingPosition.size,
+          size,
           ...igOrderParams,
         });
         dealReference = result.dealReference;
@@ -163,7 +176,7 @@ export class TradeService {
         const result = await this.igClientService.placeOrder({
           epic: mapping.igEpic,
           direction: Direction.BUY,
-          size: quantity,
+          size,
           ...igOrderParams,
         });
         dealReference = result.dealReference;
@@ -178,7 +191,6 @@ export class TradeService {
       const successLog = await this.tradeLogRepository.save(
         this.tradeLogRepository.create({
           ...baseLog,
-          quantity: input.direction === Direction.SELL ? existingPosition!.size : quantity,
           status: TradeStatus.SUCCESS,
           dealReference,
           dealId: confirmation.dealId,
@@ -277,11 +289,11 @@ export class TradeService {
       .addSelect(`SUM(CASE WHEN trade.direction = :buyDirection THEN 1 ELSE 0 END)`, 'buyCount')
       .addSelect(`SUM(CASE WHEN trade.direction = :sellDirection THEN 1 ELSE 0 END)`, 'sellCount')
       .addSelect(
-        `COALESCE(SUM(CASE WHEN trade.status = :successStatus AND trade.investmentAmount IS NOT NULL THEN trade.investmentAmount ELSE 0 END), 0)`,
+        `COALESCE(SUM(CASE WHEN trade.status = :successStatus AND trade.tradeValue IS NOT NULL THEN trade.tradeValue ELSE 0 END), 0)`,
         'totalInvested',
       )
       .addSelect(
-        `AVG(CASE WHEN trade.status = :successStatus AND trade.investmentAmount IS NOT NULL THEN trade.investmentAmount END)`,
+        `AVG(CASE WHEN trade.status = :successStatus AND trade.tradeValue IS NOT NULL THEN trade.tradeValue END)`,
         'avgInvestment',
       )
       .setParameters({
@@ -330,7 +342,7 @@ export class TradeService {
   async sumInvestmentSuccessToday(tvTicker?: string): Promise<number> {
     const qb = this.tradeLogRepository
       .createQueryBuilder('trade')
-      .select('COALESCE(SUM(trade.investmentAmount), 0)', 'total')
+      .select('COALESCE(SUM(trade.tradeValue), 0)', 'total')
       .where('trade.status = :status', { status: TradeStatus.SUCCESS })
       .andWhere('trade.createdAt BETWEEN :from AND :to', {
         from: this.todayRange()[0],

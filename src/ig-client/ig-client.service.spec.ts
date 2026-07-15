@@ -99,4 +99,57 @@ describe('IgClientService — request retry behaviour', () => {
     expect(config.headers._method).toBe('DELETE');
     expect(config.data.dealId).toBe('DEAL-1');
   });
+
+  describe('debug recording', () => {
+    it('captures nothing when not recording', async () => {
+      requestMock.mockReturnValueOnce(of({ data: { ok: true } } as unknown as AxiosResponse));
+      await service.getAccounts();
+      expect(service.stopRecording()).toEqual([]);
+    });
+
+    it('captures request + response body while recording, excluding headers', async () => {
+      service.startRecording();
+      requestMock.mockReturnValueOnce(
+        of({ data: { dealReference: 'REF-1' } } as unknown as AxiosResponse),
+      );
+
+      await service.closePosition({
+        dealId: 'DEAL-1',
+        direction: 'SELL' as never,
+        size: 2,
+        orderType: 'MARKET',
+      });
+
+      const entries = service.stopRecording();
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({
+        method: 'POST', // converted from DELETE — see the _method test above
+        responseBody: { dealReference: 'REF-1' },
+      });
+      expect((entries[0].requestBody as { dealId: string }).dealId).toBe('DEAL-1');
+      // No CST/X-SECURITY-TOKEN/API key anywhere in a captured entry.
+      expect(JSON.stringify(entries[0])).not.toMatch(/CST|SECURITY|API-KEY|secret/i);
+    });
+
+    it('captures a failed call with its error code instead of a response body', async () => {
+      service.startRecording();
+      requestMock.mockReturnValueOnce(throwError(() => axiosError(400)));
+
+      await expect(service.getAccounts()).rejects.toThrow();
+
+      const entries = service.stopRecording();
+      expect(entries).toHaveLength(1);
+      expect(entries[0].errorCode).toBe('HTTP 400');
+      expect(entries[0].responseBody).toBeUndefined();
+    });
+
+    it('stopRecording resets state so a later call is not captured', async () => {
+      service.startRecording();
+      expect(service.stopRecording()).toEqual([]);
+
+      requestMock.mockReturnValueOnce(of({ data: {} } as unknown as AxiosResponse));
+      await service.getAccounts();
+      expect(service.stopRecording()).toEqual([]);
+    });
+  });
 });

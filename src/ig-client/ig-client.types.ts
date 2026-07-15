@@ -21,6 +21,14 @@ export interface IgMarketDetails {
     decimalPlacesFactor: number | null;
     scalingFactor: number | null;
   };
+  /** Confirmed live 2026-07-15: minDealSize.value is the real minimum for
+   * IG's `size` field (£/point stake), enforced by IG itself
+   * (MINIMUM_ORDER_SIZE_ERROR below it, accepted at it) — not a share count
+   * or a differently-scaled figure despite IG's own support chatbot
+   * initially claiming otherwise. */
+  dealingRules?: {
+    minDealSize?: { value: number };
+  };
 }
 
 export interface IgPosition {
@@ -63,4 +71,19 @@ export interface ClosePositionParams {
   /** See PlaceOrderParams — same MARKET/LIMIT semantics apply to closes. */
   orderType?: 'MARKET' | 'LIMIT';
   level?: number;
+}
+
+/** One raw HTTP exchange with IG, captured only while recording is on (see
+ * IgClientService.startRecording). Deliberately excludes headers — CST/
+ * X-SECURITY-TOKEN/API key must never be exposed via this debug path, even
+ * though it's already gated behind ENABLE_TEST_SIGNALS + JwtAuthGuard. */
+export interface IgDebugEntry {
+  method: string;
+  url: string;
+  version: number;
+  requestBody: unknown;
+  responseBody?: unknown;
+  errorCode?: string;
+  durationMs: number;
+  timestamp: string;
 }

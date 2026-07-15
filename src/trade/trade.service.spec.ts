@@ -70,6 +70,8 @@ describe('TradeService', () => {
             getOpenPositionCount: jest.fn(),
             // Same scale as the signal price (factor 1) unless a test
             // overrides it — the points-scaling tests set their own quote.
+            // No dealingRules here on purpose: tests that need the minimum
+            // deal size gate set their own mock explicitly.
             getMarketDetails: jest.fn().mockResolvedValue({
               snapshot: {
                 marketStatus: 'TRADEABLE',
@@ -125,6 +127,8 @@ describe('TradeService', () => {
 
       const result = await service.executeTrade(input, mapping, null, rules);
 
+      // Live quote (offer 100.2) vs signal 100 -> factor 1, pricePoints 100.
+      // size = 1000 / 100 = 10.00 (a £/point stake, not a share count).
       expect(igClientService.placeOrder).toHaveBeenCalledWith({
         epic: mapping.igEpic,
         direction: Direction.BUY,
@@ -133,6 +137,8 @@ describe('TradeService', () => {
       });
       expect(result.status).toBe(TradeStatus.SUCCESS);
       expect(result.dealId).toBe('DEAL-1');
+      // The real £ notional actually committed: size × price-in-points.
+      expect(result.tradeValue).toBe(1000);
       // The fill price IG actually confirmed, not the TradingView signal
       // price used to size the trade — orders are MARKET, so these can differ.
       expect(result.executedPrice).toBe(101.25);
@@ -156,19 +162,45 @@ describe('TradeService', () => {
 
       const result = await service.executeTrade(input, mappingNoOverride, null, rulesWithDefault);
 
-      // quantity = floor(250 / 100 signal price) = 2
-      expect(igClientService.placeOrder).toHaveBeenCalledWith(expect.objectContaining({ size: 2 }));
-      expect(result.investmentAmount).toBe(250);
+      // size = 250 / 100 = 2.50
+      expect(igClientService.placeOrder).toHaveBeenCalledWith(
+        expect.objectContaining({ size: 2.5 }),
+      );
+      expect(result.tradeValue).toBe(250);
     });
 
-    it('logs FAILED (not an unhandled exception) when the investment amount is too small to buy a whole share', async () => {
-      const tinyInvestment = { ...mapping, investmentAmount: 1 } as StockMapping;
+    it('logs FAILED (not an unhandled exception) when the computed size floors to zero', async () => {
+      const tinyInvestment = { ...mapping, investmentAmount: 0.001 } as StockMapping;
 
       const result = await service.executeTrade(input, tinyInvestment, null, rules);
 
       expect(result.status).toBe(TradeStatus.FAILED);
-      expect(result.quantity).toBeNull();
+      expect(result.size).toBeNull();
+      expect(result.tradeValue).toBeNull();
       expect(result.errorMessage).toContain('too small');
+      expect(igClientService.placeOrder).not.toHaveBeenCalled();
+    });
+
+    it("logs FAILED when the computed size is positive but below IG's live minimum deal size", async () => {
+      igClientService.getMarketDetails.mockResolvedValue({
+        snapshot: {
+          marketStatus: 'TRADEABLE',
+          bid: 99.8,
+          offer: 100.2,
+          decimalPlacesFactor: 2,
+          scalingFactor: 1,
+        },
+        dealingRules: { minDealSize: { value: 0.24 } },
+      });
+      const smallInvestment = { ...mapping, investmentAmount: 10 } as StockMapping;
+
+      const result = await service.executeTrade(input, smallInvestment, null, rules);
+
+      // size = 10 / 100 = 0.10, below the mocked 0.24 minimum.
+      expect(result.status).toBe(TradeStatus.FAILED);
+      expect(result.tradeValue).toBeNull();
+      expect(result.errorMessage).toContain("IG's minimum");
+      expect(result.errorMessage).toContain('£24.00');
       expect(igClientService.placeOrder).not.toHaveBeenCalled();
     });
 
@@ -189,9 +221,9 @@ describe('TradeService', () => {
         rules,
       );
 
-      // quantity = floor(300 / 100 signal price) = 3
+      // size = 300 / 100 = 3.00
       expect(igClientService.placeOrder).toHaveBeenCalledWith(expect.objectContaining({ size: 3 }));
-      expect(result.investmentAmount).toBe(300);
+      expect(result.tradeValue).toBe(300);
     });
 
     it('places a LIMIT order at the signal price when the global execution mode is SIGNAL_PRICE', async () => {
@@ -329,7 +361,7 @@ describe('TradeService', () => {
       );
     });
 
-    it('scales the LIMIT level onto IG points when the market quotes 100x the signal price', async () => {
+    it('scales the LIMIT level and the size onto IG points when the market quotes 100x the signal price', async () => {
       // US share DFBs quote 1 point = 1 cent: signal $100 ↔ IG market ~10,000.
       igClientService.getMarketDetails.mockResolvedValue({
         snapshot: {
@@ -355,11 +387,14 @@ describe('TradeService', () => {
       } as TradingRules);
 
       // level = (signal 100 × factor 100) × 1.01 = 10100 — in IG points, not dollars.
+      // size = investment 1000 / pricePoints 10000 = 0.10.
       expect(igClientService.placeOrder).toHaveBeenCalledWith(
-        expect.objectContaining({ orderType: 'LIMIT', level: 10100 }),
+        expect.objectContaining({ orderType: 'LIMIT', level: 10100, size: 0.1 }),
       );
       // Filled at 10020 points → stored back on the signal scale as 100.20.
       expect(result.executedPrice).toBe(100.2);
+      // Real notional: 0.10 × 10000 = 1000, matching the configured investment.
+      expect(result.tradeValue).toBe(1000);
     });
 
     it("rounds the LIMIT level to the market's own decimalPlacesFactor", async () => {
@@ -444,6 +479,8 @@ describe('TradeService', () => {
 
       expect(result.status).toBe(TradeStatus.FAILED);
       expect(result.errorMessage).toContain('implausible');
+      expect(result.size).toBeNull();
+      expect(result.tradeValue).toBeNull();
       expect(igClientService.placeOrder).not.toHaveBeenCalled();
     });
 
@@ -513,7 +550,7 @@ describe('TradeService', () => {
       size: 10,
     };
 
-    it('closes the existing position using its full size', async () => {
+    it('closes the existing position using its full size, and never sets a trade value', async () => {
       igClientService.closePosition.mockResolvedValue({ dealReference: 'REF-3' });
       igClientService.confirmDeal.mockResolvedValue({
         dealId: 'DEAL-3',
@@ -534,12 +571,16 @@ describe('TradeService', () => {
       });
       expect(result.status).toBe(TradeStatus.SUCCESS);
       expect(result.executedPrice).toBe(108.5);
+      // Closing a position is never a new investment.
+      expect(result.tradeValue).toBeNull();
+      expect(result.size).toBe(10);
     });
 
     it('logs FAILED if executeTrade is somehow called for SELL with no position', async () => {
       const result = await service.executeTrade(sellInput, mapping, null, rules);
 
       expect(result.status).toBe(TradeStatus.FAILED);
+      expect(result.tradeValue).toBeNull();
       expect(igClientService.closePosition).not.toHaveBeenCalled();
     });
 
@@ -558,7 +599,7 @@ describe('TradeService', () => {
         direction: Direction.SELL,
         signalPrice: 100,
       };
-      await service.executeTrade(sellInputSlippage, mapping, existingPosition, {
+      const result = await service.executeTrade(sellInputSlippage, mapping, existingPosition, {
         executionMode: ExecutionMode.SIGNAL_PRICE,
         maxSlippagePercent: 1,
       } as TradingRules);
@@ -567,6 +608,7 @@ describe('TradeService', () => {
       expect(igClientService.closePosition).toHaveBeenCalledWith(
         expect.objectContaining({ orderType: 'LIMIT', level: 99 }),
       );
+      expect(result.tradeValue).toBeNull();
     });
   });
 });

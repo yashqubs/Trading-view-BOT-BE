@@ -25,16 +25,27 @@ export class TradeLog {
   })
   signalPrice: number;
 
+  // The real £ notional actually committed — size × price-in-points — for a
+  // BUY that reached a computed size. Always null for SELL (closing an
+  // existing position is never a new investment) and for any BUY that never
+  // got that far (skipped, or failed before sizing — e.g. too small for
+  // IG's minimum deal size). Deliberately NOT the configured investment
+  // amount input: that number only reflects intent, and showing it here
+  // regardless of what was actually sized/sent to IG was misleading (see
+  // the PayPal case 2026-07-14 where "£2,000 invested" was actually
+  // ~£90,000+ of real notional under the old shares-based sizing bug).
   @Column({
     type: 'decimal',
     precision: 12,
     scale: 2,
     nullable: true,
-    name: 'investment_amount',
+    name: 'trade_value',
     transformer: decimalTransformer,
   })
-  investmentAmount: number | null;
+  tradeValue: number | null;
 
+  // IG's `size` — a £-per-point stake for BUY (see calculateSize), or the
+  // exact size of the position being closed for SELL. NOT a share count.
   @Column({
     type: 'decimal',
     precision: 12,
@@ -42,7 +53,7 @@ export class TradeLog {
     nullable: true,
     transformer: decimalTransformer,
   })
-  quantity: number | null;
+  size: number | null;
 
   // The actual IG fill price (from confirmDeal's `level`) — orders are
   // placed MARKET, not LIMIT, so this can legitimately differ from
