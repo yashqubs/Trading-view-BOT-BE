@@ -41,8 +41,21 @@ jobs:
       - name: Run tests
         run: pnpm test
 
+      # `pnpm audit` is broken as of 2026-07: npm retired the legacy audit
+      # REST endpoints it depends on (410 Gone), and no stable pnpm release
+      # has migrated to the replacement bulk-advisory endpoint yet (only
+      # 12.0.0-alpha builds have). `npm audit` already works against that
+      # endpoint, but needs an npm-style lockfile — generated here in an
+      # isolated temp dir from package.json alone, so it never touches this
+      # job's real pnpm-managed node_modules/lockfile. Revert to `pnpm audit`
+      # once pnpm ships a stable fix.
       - name: Dependency audit
-        run: pnpm audit --audit-level=high
+        run: |
+          AUDIT_DIR=$(mktemp -d)
+          cp package.json "$AUDIT_DIR/"
+          cd "$AUDIT_DIR"
+          npm i --package-lock-only --no-audit --ignore-scripts
+          npm audit --audit-level=high
 
   deploy:
     name: Deploy to Production
