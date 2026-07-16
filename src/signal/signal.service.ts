@@ -11,18 +11,26 @@ import { TradingRulesService } from '../trading-rules/trading-rules.service';
 import { InFlightSignalTracker } from './in-flight-signal-tracker.service';
 
 /**
- * Orchestrates the documented 11-step condition pipeline
- * (PROJECT_DOCUMENTATION.md Section 9). Order must never change.
+ * Orchestrates the documented condition pipeline (PROJECT_DOCUMENTATION.md
+ * Section 9). Order must never change.
  *
- * Design note on steps 5,6,7 (the throttle checks — daily trade count and
- * daily investment caps): these exist to limit how much NEW exposure the bot
- * opens. They are applied to BUY signals only. A SELL signal is always a
- * request to close existing exposure, and CLAUDE.md's mandatory rule is that
- * the SELL position check (step 8) is "not optional" — blocking a close
- * because a daily cap was hit would leave unwanted exposure open, which is
- * the unsafe outcome the throttles are meant to prevent in the first place.
- * SELL signals therefore go: 1-4 (kill switch / mapping guards, which are
- * legitimate even for closes) straight to 8 (position check) then execute.
+ * Short selling (added 2026-07-16): one position per ticker, at most, never
+ * hedged. Every signal resolves the ticker's current open position (if any)
+ * BEFORE the daily throttle checks, then branches:
+ *   - No position:            BUY opens a long, SELL opens a short — both are
+ *                              NEW exposure, so both are subject to the daily
+ *                              throttles below.
+ *   - Position same direction: skipped (ALREADY_LONG / ALREADY_SHORT) — a
+ *                              repeated same-direction signal must never
+ *                              silently double exposure.
+ *   - Position opposite direction: the signal CLOSES it — never throttled,
+ *                              same reasoning as before short selling existed:
+ *                              blocking a close over a daily cap would leave
+ *                              unwanted exposure open, the unsafe outcome the
+ *                              throttles exist to prevent in the first place.
+ * `TradeService.executeTrade` decides open-vs-close from whether
+ * `existingPosition` is null, not from `input.direction` — direction alone no
+ * longer determines behaviour now that either direction can open or close.
  */
 // TradingView can resend the exact same webhook alert on delivery retry. The
 // payload carries no alert ID or TradingView-supplied timestamp to key off
@@ -94,8 +102,31 @@ export class SignalService {
       return this.tradeService.logSkip(input, TradeStatus.DISABLED, mapping.igEpic);
     }
 
-    if (input.direction === Direction.BUY) {
-      // 5. daily trade count
+    // 5. resolve this ticker's current open position (either direction) —
+    // moved ahead of the daily throttles because whether they apply now
+    // depends on open-vs-close, not on input.direction alone.
+    const positions = await this.igClientService.getOpenPositions();
+    const existingPosition: IgPosition | null =
+      positions.find((position) => position.epic === mapping.igEpic) ?? null;
+
+    if (existingPosition) {
+      if (input.direction === Direction.BUY && existingPosition.direction === Direction.BUY) {
+        return this.tradeService.logSkip(input, TradeStatus.ALREADY_LONG, mapping.igEpic);
+      }
+      if (input.direction === Direction.SELL && existingPosition.direction === Direction.SELL) {
+        return this.tradeService.logSkip(input, TradeStatus.ALREADY_SHORT, mapping.igEpic);
+      }
+    }
+
+    // Opening NEW exposure = no position exists yet (BUY opens a long, SELL
+    // opens a short). An opposite-direction position present means this
+    // signal CLOSES it instead — never throttled below, same reasoning as
+    // before short selling existed (blocking a close over a daily cap would
+    // leave unwanted exposure open).
+    const isOpening = existingPosition === null;
+
+    if (isOpening) {
+      // 6. daily trade count
       if (rules.dailyMaxTradeCount !== null) {
         const tradeCountToday = await this.tradeService.countSuccessToday();
         if (tradeCountToday >= rules.dailyMaxTradeCount) {
@@ -103,7 +134,7 @@ export class SignalService {
         }
       }
 
-      // 6. daily total investment
+      // 7. daily total investment
       if (rules.dailyMaxTotalInvestment !== null) {
         const investedToday = await this.tradeService.sumInvestmentSuccessToday();
         const wouldBeInvested =
@@ -113,7 +144,7 @@ export class SignalService {
         }
       }
 
-      // 7. stock daily spend
+      // 8. stock daily spend
       if (mapping.maxDailySpend !== null) {
         const investedTodayForStock = await this.tradeService.sumInvestmentSuccessToday(
           mapping.tvTicker,
@@ -127,17 +158,7 @@ export class SignalService {
       }
     }
 
-    // 8. SELL must have an open position
-    let existingPosition: IgPosition | null = null;
-    if (input.direction === Direction.SELL) {
-      const positions = await this.igClientService.getOpenPositions();
-      existingPosition = positions.find((position) => position.epic === mapping.igEpic) ?? null;
-      if (!existingPosition) {
-        return this.tradeService.logSkip(input, TradeStatus.NO_POSITION, mapping.igEpic);
-      }
-    }
-
-    // 9-11. calculate quantity, execute on IG, log SUCCESS/FAILED, handle failure counter
+    // 9. calculate size, execute on IG, log SUCCESS/FAILED, handle failure counter
     this.logger.log(`Executing ${input.direction} for ${input.tvTicker} @ ${input.signalPrice}`);
     return this.tradeService.executeTrade(input, mapping, existingPosition, rules);
   }

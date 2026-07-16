@@ -67,8 +67,18 @@ export class TradeService {
 
   /**
    * Executes the trade on IG and logs the outcome. Caller (SignalModule) has
-   * already run every condition check — for SELL, `existingPosition` is the
-   * open position to close (matched during the SELL position check).
+   * already run every condition check and resolved `existingPosition` — this
+   * method decides open-vs-close from whether it's null, NOT from
+   * `input.direction`, since short selling (2026-07-16) means either
+   * direction can open a new position or close an existing opposite one:
+   *   - `existingPosition` is null       → OPENING. BUY opens a long, SELL
+   *     opens a short — the order direction sent to IG matches input.direction.
+   *   - `existingPosition` is not null   → CLOSING it. The order direction
+   *     sent to IG is the OPPOSITE of the existing position's own direction
+   *     (closing a long = a SELL order; closing a short = a BUY order),
+   *     regardless of input.direction — the caller already guarantees
+   *     input.direction is opposite to existingPosition.direction (see
+   *     SignalService's ALREADY_LONG/ALREADY_SHORT skip).
    *
    * `rules` supplies the global default execution mode + slippage tolerance;
    * `mapping.executionMode`/`mapping.maxSlippagePercent` override them
@@ -123,15 +133,28 @@ export class TradeService {
     };
 
     try {
+      const isClosing = existingPosition !== null;
+      // The direction actually sent to IG — opposite of the existing
+      // position when closing (closing a long is a SELL order, closing a
+      // short is a BUY order), or input.direction when opening fresh.
+      const orderDirection = isClosing
+        ? existingPosition!.direction === Direction.BUY
+          ? Direction.SELL
+          : Direction.BUY
+        : input.direction;
+
       // Every trade (MARKET included) is anchored to IG's live quote before
       // any order goes out: the signal price must resemble the real market
       // (assertSignalPricePlausible — sizing, trade value, and the slippage
       // ceiling are all computed from it, so an implausible price corrupts
       // everything downstream), and the derived power-of-ten factor converts
-      // between the signal scale and IG's points scale.
+      // between the signal scale and IG's points scale. The reference side
+      // (offer/bid) follows the order we're actually about to send, not the
+      // raw signal direction — a BUY order (whether opening a long or
+      // closing a short) buys at the offer; a SELL order sells at the bid.
       const details = await this.igClientService.getMarketDetails(mapping.igEpic);
       const reference =
-        input.direction === Direction.BUY ? details.snapshot?.offer : details.snapshot?.bid;
+        orderDirection === Direction.BUY ? details.snapshot?.offer : details.snapshot?.bid;
       if (reference == null || reference <= 0) {
         throw new IgApiException('NO_LIVE_QUOTE');
       }
@@ -140,13 +163,11 @@ export class TradeService {
       const pricePoints = input.signalPrice * priceScaleFactor;
 
       let size: number;
-      if (input.direction === Direction.SELL) {
-        if (!existingPosition) {
-          throw new IgApiException('NO_POSITION_AT_EXECUTION');
-        }
-        // Closing a position is never a new investment — tradeValue stays
-        // null (see the entity comment); size is whatever the position is.
-        size = existingPosition.size;
+      if (isClosing) {
+        // Closing a position (long or short) is never a new investment —
+        // tradeValue stays null (see the entity comment); size is whatever
+        // the existing position is.
+        size = existingPosition!.size;
       } else {
         size = calculateSize(investmentAmount, pricePoints);
         const minDealSize = details.dealingRules?.minDealSize?.value;
@@ -165,7 +186,7 @@ export class TradeService {
           ? {
               orderType: 'LIMIT' as const,
               level: this.roundToMarketPrecision(
-                calculateLimitLevel(pricePoints, input.direction, maxSlippagePercent),
+                calculateLimitLevel(pricePoints, orderDirection, maxSlippagePercent),
                 details.snapshot.decimalPlacesFactor,
               ),
             }
@@ -173,10 +194,10 @@ export class TradeService {
 
       let dealReference: string;
 
-      if (input.direction === Direction.SELL) {
+      if (isClosing) {
         const result = await this.igClientService.closePosition({
           dealId: existingPosition!.dealId,
-          direction: Direction.SELL,
+          direction: orderDirection,
           size,
           ...igOrderParams,
         });
@@ -184,7 +205,7 @@ export class TradeService {
       } else {
         const result = await this.igClientService.placeOrder({
           epic: mapping.igEpic,
-          direction: Direction.BUY,
+          direction: orderDirection,
           size,
           ...igOrderParams,
         });
@@ -208,9 +229,9 @@ export class TradeService {
         // a real filled position. Never trust an ambiguous/negative confirm
         // alone — check IG's actual open positions first.
         const reconciled = await this.reconcileAgainstOpenPositions(
-          input,
           mapping,
           existingPosition,
+          orderDirection,
           size,
         );
         if (reconciled) {
@@ -287,27 +308,29 @@ export class TradeService {
    * it before this retry was added).
    */
   private async reconcileAgainstOpenPositions(
-    input: SignalInput,
     mapping: StockMapping,
     existingPosition: IgPosition | null,
+    orderDirection: Direction,
     size: number,
   ): Promise<{ dealId: string; level: number | null } | null> {
+    const isClosing = existingPosition !== null;
     for (let attempt = 1; attempt <= RECONCILE_MAX_ATTEMPTS; attempt++) {
       try {
         const positions = await this.igClientService.getOpenPositions();
 
-        if (input.direction === Direction.SELL) {
+        if (isClosing) {
           // Reconciled success = the position we tried to close is now gone.
-          if (existingPosition && !positions.some((p) => p.dealId === existingPosition.dealId)) {
-            return { dealId: existingPosition.dealId, level: null };
+          if (!positions.some((p) => p.dealId === existingPosition!.dealId)) {
+            return { dealId: existingPosition!.dealId, level: null };
           }
         } else {
-          // BUY: look for a newly opened position matching epic/direction/
-          // size — exact size match, since it's the precise value just sent.
+          // Opening (long or short): look for a newly opened position
+          // matching epic/direction/size — exact size match, since it's the
+          // precise value just sent.
           const match = positions.find(
             (p) =>
               p.epic === mapping.igEpic &&
-              p.direction === Direction.BUY &&
+              p.direction === orderDirection &&
               Math.abs(p.size - size) < 0.0001,
           );
           if (match) {

@@ -494,9 +494,9 @@ Local development still uses `.env` for everything with `SECRETS_SOURCE=local` (
 
 ### Trade Log Status Values
 
-SUCCESS, FAILED, MARKET_CLOSED, NOT_MAPPED, DISABLED, NO_POSITION, BOT_PAUSED, BUY_DISABLED, SELL_DISABLED, DAILY_TOTAL_LIMIT, DAILY_TRADE_LIMIT, GLOBAL_POSITION_LIMIT, STOCK_DAILY_LIMIT, COOL_DOWN, MAX_POSITIONS_STOCK, AUTO_PAUSED, DUPLICATE_SIGNAL
+SUCCESS, FAILED, MARKET_CLOSED, NOT_MAPPED, DISABLED, NO_POSITION, BOT_PAUSED, BUY_DISABLED, SELL_DISABLED, ALREADY_LONG, ALREADY_SHORT, DAILY_TOTAL_LIMIT, DAILY_TRADE_LIMIT, GLOBAL_POSITION_LIMIT, STOCK_DAILY_LIMIT, COOL_DOWN, MAX_POSITIONS_STOCK, AUTO_PAUSED, DUPLICATE_SIGNAL
 
-> 17 statuses total. `DUPLICATE_SIGNAL` comes from the resend guard in `signal.service.ts` (see Section 9) — every webhook delivery writes a `trade_log` row, including duplicates. `MARKET_CLOSED`, `GLOBAL_POSITION_LIMIT`, `COOL_DOWN`, and `MAX_POSITIONS_STOCK` are legacy-only: nothing writes them since the markets/trading-hours feature and the position-cap/cool-down throttles were removed, but historical rows keep them.
+> 19 statuses total. `DUPLICATE_SIGNAL` comes from the resend guard in `signal.service.ts` (see Section 9) — every webhook delivery writes a `trade_log` row, including duplicates. `ALREADY_LONG`/`ALREADY_SHORT` were added 2026-07-16 with short selling. `MARKET_CLOSED`, `GLOBAL_POSITION_LIMIT`, `COOL_DOWN`, and `MAX_POSITIONS_STOCK` are legacy-only: nothing writes them since the markets/trading-hours feature and the position-cap/cool-down throttles were removed. `NO_POSITION` is also legacy-only as of 2026-07-16: a SELL with no position now opens a short instead of skipping. All legacy statuses' historical rows remain.
 
 > No `closing_price` / `profit_loss` / `profit_loss_pct` columns. A "realized P&L" computed from the TradingView signal price on the closing trade existed briefly and was removed app-wide (frontend, `TradeService`, and a migration dropping the columns) — see Section 19 Limitation 1 for why.
 
@@ -508,23 +508,38 @@ SUCCESS, FAILED, MARKET_CLOSED, NOT_MAPPED, DISABLED, NO_POSITION, BOT_PAUSED, B
 
 When a signal arrives, conditions are checked in sequence. The first failure stops processing.
 
-> Ahead of step 1, `SignalService.isDuplicateSignal()` runs a technical (non-business) check: if the same ticker + direction + price arrived within the last 20 seconds, the signal is logged `DUPLICATE_SIGNAL` and skipped. This exists because TradingView can resend the same webhook on delivery retry, and it's in-memory only (safe because the app runs as a single PM2 fork instance — see `ecosystem.config.js`). It is not one of the 11 numbered steps below.
+> Ahead of step 1, `SignalService.isDuplicateSignal()` runs a technical (non-business) check: if the same ticker + direction + price arrived within the last 20 seconds, the signal is logged `DUPLICATE_SIGNAL` and skipped. This exists because TradingView can resend the same webhook on delivery retry, and it's in-memory only (safe because the app runs as a single PM2 fork instance — see `ecosystem.config.js`). It is not one of the numbered steps below.
 
 > There is no market-hours check — the markets/trading-hours feature was deliberately removed. Signals are processed whenever they arrive; an out-of-hours order goes to IG and is logged FAILED if IG rejects it. The global position cap, per-stock cool-down, and per-stock max-positions throttles were also deliberately removed — don't reintroduce them without discussing first.
 
 ```
-1.  bot_enabled = true?            → NO → BOT_PAUSED
-2.  direction allowed?             → NO → BUY_DISABLED / SELL_DISABLED
-3.  ticker in mapping? (case-insensitive since 2026-07-16, see MappingService.findByTicker) → NO → NOT_MAPPED
-4.  stock enabled?                 → NO → DISABLED
-5.  daily trade count OK?          → NO → DAILY_TRADE_LIMIT
-6.  daily total investment OK?     → NO → DAILY_TOTAL_LIMIT
-7.  stock daily spend OK?          → NO → STOCK_DAILY_LIMIT
-8.  SELL has open position?        → NO → NO_POSITION
-9.  calculate size, execute
+1. bot_enabled = true?             → NO → BOT_PAUSED
+2. direction allowed?              → NO → BUY_DISABLED / SELL_DISABLED
+3. ticker in mapping? (case-insensitive since 2026-07-16, see MappingService.findByTicker) → NO → NOT_MAPPED
+4. stock enabled?                  → NO → DISABLED
+5. resolve existing position for this ticker (either direction — see "Short Selling" below)
+     same direction already open?  → NO → ALREADY_LONG / ALREADY_SHORT
+     opposite direction open?      → this signal CLOSES it — skip straight to step 9, never throttled
+     no position?                  → this signal OPENS one (BUY=long, SELL=short) — subject to steps 6-8
+6. daily trade count OK? (opening only)      → NO → DAILY_TRADE_LIMIT
+7. daily total investment OK? (opening only) → NO → DAILY_TOTAL_LIMIT
+8. stock daily spend OK? (opening only)      → NO → STOCK_DAILY_LIMIT
+9. calculate size, execute
 10. log SUCCESS or FAILED
 11. if FAILED: increment failure counter; auto-pause if threshold hit
 ```
+
+### Short Selling (added 2026-07-16)
+
+**One position per ticker, at most — never hedged.** Before this, a SELL with no open position was skipped (`NO_POSITION`); now it opens a short instead, symmetric with how a BUY opens a long. `SignalService.runPipeline` resolves the ticker's current open position (step 5) before the daily throttles, then branches:
+
+- **No position** → the signal OPENS new exposure (BUY → long, SELL → short). Subject to the same daily trade-count/total-investment/per-stock-spend throttles a BUY-opening-a-long always was — opening a short is new risk exposure just like opening a long, so it must be capped the same way.
+- **Position already in the signal's own direction** → skipped with `ALREADY_LONG` (BUY while already long) or `ALREADY_SHORT` (SELL while already short), so a repeated same-direction signal never silently doubles exposure.
+- **Position in the opposite direction** → the signal CLOSES it. Never throttled — the pre-existing reasoning still holds: blocking a close over a daily cap would leave unwanted exposure open, the unsafe outcome the throttles exist to prevent.
+
+`TradeService.executeTrade` decides open-vs-close from whether `existingPosition` is null, **not** from `input.direction` — either direction can now open or close depending on what's already open:
+- Opening: the order direction sent to IG is `input.direction` (BUY opens long, SELL opens short); `calculateSize` sizes it exactly like opening a long always worked; `trade_value` is set.
+- Closing: the order direction sent to IG is the **opposite** of `existingPosition.direction` (closing a long is a SELL order; closing a short is a BUY order) — this can differ from `input.direction`'s naive reading when closing a short (a BUY signal closes it via a BUY order to IG, which happens to match, but the *reasoning* is "opposite of the position," not "same as input.direction," and is only reliably that way because the position check upstream guarantees this signal is exactly opposite to the open position). `trade_value` stays null — closing is never a new investment, whichever direction is closed. The live-quote reference side (offer/bid) and the LIMIT slippage ceiling/floor both follow this actual order direction, not `input.direction`.
 
 ### Global Conditions (trading_rules)
 

@@ -60,6 +60,25 @@ function buildInput(overrides: Partial<SignalInput> = {}): SignalInput {
   };
 }
 
+function buildPosition(
+  overrides: Partial<{
+    dealId: string;
+    epic: string;
+    direction: Direction;
+    size: number;
+    level: number | null;
+  }> = {},
+) {
+  return {
+    dealId: 'POS-1',
+    epic: 'CS.D.AAPL.CASH.IP',
+    direction: Direction.BUY,
+    size: 10,
+    level: 100,
+    ...overrides,
+  };
+}
+
 describe('SignalService — condition pipeline', () => {
   let service: SignalService;
   let tradingRulesService: jest.Mocked<TradingRulesService>;
@@ -146,7 +165,60 @@ describe('SignalService — condition pipeline', () => {
     expect(result.status).toBe(TradeStatus.DISABLED);
   });
 
-  it('step 5: stops with DAILY_TRADE_LIMIT on BUY when daily trade count is reached', async () => {
+  describe('step 5: resolve existing position — short selling (one position per ticker)', () => {
+    it('skips with ALREADY_LONG when a BUY arrives while already long', async () => {
+      igClientService.getOpenPositions.mockResolvedValue([
+        buildPosition({ direction: Direction.BUY }),
+      ]);
+
+      const result = await service.processSignal(buildInput({ direction: Direction.BUY }));
+
+      expect(result.status).toBe(TradeStatus.ALREADY_LONG);
+      expect(tradeService.executeTrade).not.toHaveBeenCalled();
+    });
+
+    it('skips with ALREADY_SHORT when a SELL arrives while already short', async () => {
+      igClientService.getOpenPositions.mockResolvedValue([
+        buildPosition({ direction: Direction.SELL }),
+      ]);
+
+      const result = await service.processSignal(buildInput({ direction: Direction.SELL }));
+
+      expect(result.status).toBe(TradeStatus.ALREADY_SHORT);
+      expect(tradeService.executeTrade).not.toHaveBeenCalled();
+    });
+
+    it('opens a short when a SELL arrives with no open position at all', async () => {
+      igClientService.getOpenPositions.mockResolvedValue([]);
+
+      const result = await service.processSignal(buildInput({ direction: Direction.SELL }));
+
+      expect(result.status).toBe(TradeStatus.SUCCESS);
+      expect(tradeService.executeTrade).toHaveBeenCalledWith(
+        expect.objectContaining({ direction: Direction.SELL }),
+        expect.objectContaining({ tvTicker: 'AAPL' }),
+        null, // no existing position — TradeService.executeTrade opens fresh
+        expect.objectContaining({ executionMode: ExecutionMode.MARKET }),
+      );
+    });
+
+    it('closes an existing short when a BUY arrives', async () => {
+      const shortPosition = buildPosition({ direction: Direction.SELL });
+      igClientService.getOpenPositions.mockResolvedValue([shortPosition]);
+
+      const result = await service.processSignal(buildInput({ direction: Direction.BUY }));
+
+      expect(result.status).toBe(TradeStatus.SUCCESS);
+      expect(tradeService.executeTrade).toHaveBeenCalledWith(
+        expect.objectContaining({ direction: Direction.BUY }),
+        expect.objectContaining({ tvTicker: 'AAPL' }),
+        shortPosition,
+        expect.objectContaining({ executionMode: ExecutionMode.MARKET }),
+      );
+    });
+  });
+
+  it('step 6: stops with DAILY_TRADE_LIMIT on BUY when daily trade count is reached', async () => {
     tradingRulesService.get.mockResolvedValue(buildRules({ dailyMaxTradeCount: 5 }));
     tradeService.countSuccessToday.mockResolvedValue(5);
 
@@ -155,7 +227,17 @@ describe('SignalService — condition pipeline', () => {
     expect(result.status).toBe(TradeStatus.DAILY_TRADE_LIMIT);
   });
 
-  it('step 6: stops with DAILY_TOTAL_LIMIT on BUY when the cap would be exceeded', async () => {
+  it('step 6: also applies to a SELL that would open a short (opening new exposure either way)', async () => {
+    tradingRulesService.get.mockResolvedValue(buildRules({ dailyMaxTradeCount: 5 }));
+    tradeService.countSuccessToday.mockResolvedValue(5);
+    igClientService.getOpenPositions.mockResolvedValue([]); // no position -> opening a short
+
+    const result = await service.processSignal(buildInput({ direction: Direction.SELL }));
+
+    expect(result.status).toBe(TradeStatus.DAILY_TRADE_LIMIT);
+  });
+
+  it('step 7: stops with DAILY_TOTAL_LIMIT on BUY when the cap would be exceeded', async () => {
     tradingRulesService.get.mockResolvedValue(buildRules({ dailyMaxTotalInvestment: 1500 }));
     tradeService.sumInvestmentSuccessToday.mockResolvedValue(1000);
 
@@ -164,7 +246,7 @@ describe('SignalService — condition pipeline', () => {
     expect(result.status).toBe(TradeStatus.DAILY_TOTAL_LIMIT);
   });
 
-  it('step 6: a stock with no investmentAmount override is checked against the global default', async () => {
+  it('step 7: a stock with no investmentAmount override is checked against the global default', async () => {
     tradingRulesService.get.mockResolvedValue(
       buildRules({ dailyMaxTotalInvestment: 1200, investmentAmount: 500 }),
     );
@@ -176,7 +258,7 @@ describe('SignalService — condition pipeline', () => {
     expect(result.status).toBe(TradeStatus.DAILY_TOTAL_LIMIT);
   });
 
-  it('step 6: a dev-test investmentAmountOverride takes priority over both the stock and the global default', async () => {
+  it('step 7: a dev-test investmentAmountOverride takes priority over both the stock and the global default', async () => {
     tradingRulesService.get.mockResolvedValue(
       buildRules({ dailyMaxTotalInvestment: 1200, investmentAmount: 500 }),
     );
@@ -192,22 +274,13 @@ describe('SignalService — condition pipeline', () => {
     expect(result.status).toBe(TradeStatus.DAILY_TOTAL_LIMIT);
   });
 
-  it('step 7: stops with STOCK_DAILY_LIMIT on BUY when the per-stock cap would be exceeded', async () => {
+  it('step 8: stops with STOCK_DAILY_LIMIT on BUY when the per-stock cap would be exceeded', async () => {
     mappingService.findByTicker.mockResolvedValue(buildMapping({ maxDailySpend: 1500 }));
     tradeService.sumInvestmentSuccessToday.mockResolvedValue(1000);
 
     const result = await service.processSignal(buildInput({ direction: Direction.BUY }));
 
     expect(result.status).toBe(TradeStatus.STOCK_DAILY_LIMIT);
-  });
-
-  it('step 8: stops with NO_POSITION on SELL when there is no open position for the epic', async () => {
-    igClientService.getOpenPositions.mockResolvedValue([]);
-
-    const result = await service.processSignal(buildInput({ direction: Direction.SELL }));
-
-    expect(result.status).toBe(TradeStatus.NO_POSITION);
-    expect(tradeService.executeTrade).not.toHaveBeenCalled();
   });
 
   it('proceeds to execution on BUY once every condition passes', async () => {
@@ -221,14 +294,8 @@ describe('SignalService — condition pipeline', () => {
     );
   });
 
-  it('proceeds to execution on SELL with the matched open position', async () => {
-    const position = {
-      dealId: 'POS-1',
-      epic: 'CS.D.AAPL.CASH.IP',
-      direction: Direction.BUY,
-      size: 10,
-      level: 100,
-    };
+  it('proceeds to execution on SELL with the matched open long position (closes it)', async () => {
+    const position = buildPosition({ direction: Direction.BUY });
     igClientService.getOpenPositions.mockResolvedValue([position]);
 
     await service.processSignal(buildInput({ direction: Direction.SELL }));
@@ -241,16 +308,10 @@ describe('SignalService — condition pipeline', () => {
     );
   });
 
-  it('SELL bypasses the BUY-only throttle checks (daily limit already exhausted)', async () => {
+  it('closing an opposite-direction position bypasses the daily throttle checks', async () => {
     tradingRulesService.get.mockResolvedValue(buildRules({ dailyMaxTradeCount: 5 }));
-    tradeService.countSuccessToday.mockResolvedValue(999); // would block a BUY
-    const position = {
-      dealId: 'POS-1',
-      epic: 'CS.D.AAPL.CASH.IP',
-      direction: Direction.BUY,
-      size: 10,
-      level: 100,
-    };
+    tradeService.countSuccessToday.mockResolvedValue(999); // would block an opening trade
+    const position = buildPosition({ direction: Direction.BUY });
     igClientService.getOpenPositions.mockResolvedValue([position]);
 
     const result = await service.processSignal(buildInput({ direction: Direction.SELL }));

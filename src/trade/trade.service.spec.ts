@@ -673,14 +673,6 @@ describe('TradeService', () => {
       expect(result.size).toBe(10);
     });
 
-    it('logs FAILED if executeTrade is somehow called for SELL with no position', async () => {
-      const result = await service.executeTrade(sellInput, mapping, null, rules);
-
-      expect(result.status).toBe(TradeStatus.FAILED);
-      expect(result.tradeValue).toBeNull();
-      expect(igClientService.closePosition).not.toHaveBeenCalled();
-    });
-
     it('applies the slippage tolerance the opposite direction on a SELL (floor, not ceiling)', async () => {
       igClientService.closePosition.mockResolvedValue({ dealReference: 'REF-4' });
       igClientService.confirmDeal.mockResolvedValue({
@@ -734,6 +726,128 @@ describe('TradeService', () => {
       const result = await service.executeTrade(sellInput, mapping, existingPosition, rules);
 
       expect(result.status).toBe(TradeStatus.FAILED);
+    });
+  });
+
+  describe('executeTrade — short selling (2026-07-16)', () => {
+    it('opens a short when a SELL arrives with no existing position (existingPosition null)', async () => {
+      igClientService.placeOrder.mockResolvedValue({ dealReference: 'REF-SHORT-1' });
+      igClientService.confirmDeal.mockResolvedValue({
+        dealId: 'DEAL-SHORT-1',
+        dealStatus: 'ACCEPTED',
+        status: 'OPEN',
+        reason: null,
+        level: 100,
+      });
+
+      const sellOpenInput: SignalInput = { ...input, direction: Direction.SELL };
+      const result = await service.executeTrade(sellOpenInput, mapping, null, rules);
+
+      // Opening a short sends a SELL order, sized exactly like opening a
+      // long — same calculateSize formula, size = 1000 / 100 = 10.
+      expect(igClientService.placeOrder).toHaveBeenCalledWith({
+        epic: mapping.igEpic,
+        direction: Direction.SELL,
+        size: 10,
+        orderType: 'MARKET',
+      });
+      expect(igClientService.closePosition).not.toHaveBeenCalled();
+      expect(result.status).toBe(TradeStatus.SUCCESS);
+      // Opening a short IS a new investment, unlike closing.
+      expect(result.tradeValue).toBe(1000);
+    });
+
+    it("logs FAILED when opening a short's computed size is below IG's minimum deal size", async () => {
+      igClientService.getMarketDetails.mockResolvedValue({
+        snapshot: {
+          marketStatus: 'TRADEABLE',
+          bid: 99.8,
+          offer: 100.2,
+          decimalPlacesFactor: 2,
+          scalingFactor: 1,
+        },
+        dealingRules: { minDealSize: { value: 0.24 } },
+      });
+      const smallInvestment = { ...mapping, investmentAmount: 10 } as StockMapping;
+
+      const sellOpenInput: SignalInput = { ...input, direction: Direction.SELL };
+      const result = await service.executeTrade(sellOpenInput, smallInvestment, null, rules);
+
+      expect(result.status).toBe(TradeStatus.FAILED);
+      expect(result.errorMessage).toContain("IG's minimum");
+      expect(igClientService.placeOrder).not.toHaveBeenCalled();
+    });
+
+    it('closes an existing short when a BUY arrives, sending a BUY order for the opposite direction', async () => {
+      igClientService.closePosition.mockResolvedValue({ dealReference: 'REF-SHORT-2' });
+      igClientService.confirmDeal.mockResolvedValue({
+        dealId: 'DEAL-SHORT-2',
+        dealStatus: 'ACCEPTED',
+        status: 'CLOSED',
+        reason: null,
+        level: 95,
+      });
+      const shortPosition = {
+        dealId: 'SHORT-POS-1',
+        epic: mapping.igEpic,
+        direction: Direction.SELL,
+        size: 5,
+        level: 100,
+      };
+
+      const buyCloseInput: SignalInput = { ...input, direction: Direction.BUY };
+      const result = await service.executeTrade(buyCloseInput, mapping, shortPosition, rules);
+
+      // Closing a short = a BUY order (opposite of the short's own SELL),
+      // using the short's own size, not a freshly computed one.
+      expect(igClientService.closePosition).toHaveBeenCalledWith({
+        dealId: 'SHORT-POS-1',
+        direction: Direction.BUY,
+        size: 5,
+        orderType: 'MARKET',
+      });
+      expect(igClientService.placeOrder).not.toHaveBeenCalled();
+      expect(result.status).toBe(TradeStatus.SUCCESS);
+      expect(result.size).toBe(5);
+      // Closing is never a new investment, whichever direction is closed.
+      expect(result.tradeValue).toBeNull();
+    });
+
+    it('uses the offer (not bid) as the plausibility/scale reference when a BUY closes a short', async () => {
+      // Reference must follow the actual order direction (BUY, since closing
+      // a short buys it back) — not input.direction alone, and not the
+      // existing position's own direction.
+      igClientService.getMarketDetails.mockResolvedValue({
+        snapshot: {
+          marketStatus: 'TRADEABLE',
+          bid: 9980, // if bid were used, a $100 signal would look ~0% off — misleading
+          offer: 10020,
+          decimalPlacesFactor: 1,
+          scalingFactor: 1,
+        },
+      });
+      igClientService.closePosition.mockResolvedValue({ dealReference: 'REF-SHORT-3' });
+      igClientService.confirmDeal.mockResolvedValue({
+        dealId: 'DEAL-SHORT-3',
+        dealStatus: 'ACCEPTED',
+        status: 'CLOSED',
+        reason: null,
+        level: 10020,
+      });
+      const shortPosition = {
+        dealId: 'SHORT-POS-2',
+        epic: mapping.igEpic,
+        direction: Direction.SELL,
+        size: 5,
+        level: 9900,
+      };
+
+      const buyCloseInput: SignalInput = { ...input, direction: Direction.BUY, signalPrice: 100 };
+      const result = await service.executeTrade(buyCloseInput, mapping, shortPosition, rules);
+
+      // factor derived from offer (10020) vs signal 100 -> 100; fill 10020 / 100 = 100.20.
+      expect(result.status).toBe(TradeStatus.SUCCESS);
+      expect(result.executedPrice).toBe(100.2);
     });
   });
 });
