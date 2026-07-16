@@ -34,16 +34,27 @@ describe('MappingService', () => {
     create: jest.Mock;
     save: jest.Mock;
     remove: jest.Mock;
+    createQueryBuilder: jest.Mock;
   };
+  // findByTicker() goes through createQueryBuilder().where().getOne() (a
+  // case-insensitive LOWER() comparison, not repository.findOne) — this is
+  // the single knob tests use to control what "an existing ticker" resolves
+  // to, defaulting to "not found" unless a test overrides it.
+  let queryBuilderGetOne: jest.Mock;
   let tradingRulesService: { get: jest.Mock };
 
   beforeEach(async () => {
+    queryBuilderGetOne = jest.fn().mockResolvedValue(null);
     repository = {
       findOne: jest.fn(),
       find: jest.fn(),
       create: jest.fn((data) => data),
       save: jest.fn((data) => Promise.resolve({ id: 1, ...data })),
       remove: jest.fn(),
+      createQueryBuilder: jest.fn(() => ({
+        where: jest.fn().mockReturnThis(),
+        getOne: queryBuilderGetOne,
+      })),
     };
     tradingRulesService = {
       get: jest.fn().mockResolvedValue({ investmentAmount: GLOBAL_INVESTMENT_AMOUNT }),
@@ -63,7 +74,7 @@ describe('MappingService', () => {
 
   describe('create', () => {
     it('rejects a ticker that is already mapped', async () => {
-      repository.findOne.mockResolvedValue(buildMapping());
+      queryBuilderGetOne.mockResolvedValue(buildMapping());
 
       await expect(
         service.create({
@@ -71,6 +82,22 @@ describe('MappingService', () => {
           igEpic: 'CS.D.AAPL.CASH.IP',
           instrumentName: 'Apple Inc',
           instrumentType: 'SHARES',
+          investmentAmount: 1000,
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('rejects a ticker that is already mapped in a different case (case-insensitive)', async () => {
+      // Real signal 2026-07-16: "SILVER" was logged NOT_MAPPED against a
+      // mapping stored as "Silver" — findByTicker must not be case-sensitive.
+      queryBuilderGetOne.mockResolvedValue(buildMapping({ tvTicker: 'Silver' }));
+
+      await expect(
+        service.create({
+          tvTicker: 'SILVER',
+          igEpic: 'CS.D.SILVER.CASH.IP',
+          instrumentName: 'Silver',
+          instrumentType: 'COMMODITIES',
           investmentAmount: 1000,
         }),
       ).rejects.toThrow(BadRequestException);
@@ -92,7 +119,7 @@ describe('MappingService', () => {
     });
 
     it('creates the mapping', async () => {
-      repository.findOne.mockResolvedValueOnce(null); // no existing ticker
+      // No existing ticker: queryBuilderGetOne already defaults to null.
       repository.findOne.mockResolvedValueOnce(buildMapping()); // findByIdOrThrow after save
 
       const result = await service.create({
@@ -108,7 +135,7 @@ describe('MappingService', () => {
     });
 
     it('omits investmentAmount to inherit the global default, saved as null', async () => {
-      repository.findOne.mockResolvedValueOnce(null); // no existing ticker
+      // No existing ticker: queryBuilderGetOne already defaults to null.
       repository.findOne.mockResolvedValueOnce(buildMapping({ investmentAmount: null }));
 
       await service.create({

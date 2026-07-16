@@ -13,7 +13,12 @@ export class StockMapping {
   @PrimaryGeneratedColumn()
   id: number;
 
-  @Column({ type: 'varchar', length: 20, unique: true, name: 'tv_ticker' })
+  // Uniqueness enforced case-insensitively at the DB level via a functional
+  // index on LOWER(tv_ticker) (migration CaseInsensitiveTvTickerUnique), not
+  // via `unique: true` here — a plain column-level unique constraint is
+  // case-sensitive in Postgres and would let "SILVER"/"Silver" coexist even
+  // though MappingService.findByTicker() treats them as the same ticker.
+  @Column({ type: 'varchar', length: 20, name: 'tv_ticker' })
   tvTicker: string;
 
   @Column({ type: 'varchar', length: 60, name: 'ig_epic' })

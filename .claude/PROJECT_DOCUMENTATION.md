@@ -515,7 +515,7 @@ When a signal arrives, conditions are checked in sequence. The first failure sto
 ```
 1.  bot_enabled = true?            → NO → BOT_PAUSED
 2.  direction allowed?             → NO → BUY_DISABLED / SELL_DISABLED
-3.  ticker in mapping?             → NO → NOT_MAPPED
+3.  ticker in mapping? (case-insensitive since 2026-07-16, see MappingService.findByTicker) → NO → NOT_MAPPED
 4.  stock enabled?                 → NO → DISABLED
 5.  daily trade count OK?          → NO → DAILY_TRADE_LIMIT
 6.  daily total investment OK?     → NO → DAILY_TOTAL_LIMIT

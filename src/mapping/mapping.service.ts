@@ -30,8 +30,16 @@ export class MappingService {
     return mapping;
   }
 
+  // Case-insensitive on purpose: TradingView alerts, IG search results, and
+  // manual entry all vary in casing (SILVER vs Silver vs silver), and a
+  // ticker that's genuinely mapped shouldn't fail with NOT_MAPPED just
+  // because the casing doesn't match byte-for-byte. Uses a parameterized
+  // LOWER() comparison (TypeORM query builder), never a raw string.
   findByTicker(tvTicker: string): Promise<StockMapping | null> {
-    return this.stockMappingRepository.findOne({ where: { tvTicker } });
+    return this.stockMappingRepository
+      .createQueryBuilder('mapping')
+      .where('LOWER(mapping.tvTicker) = LOWER(:tvTicker)', { tvTicker })
+      .getOne();
   }
 
   /** Accepts either the numeric DB id or the TradingView ticker string. */
