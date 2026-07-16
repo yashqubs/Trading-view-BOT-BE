@@ -25,6 +25,15 @@ export interface PaginatedTradeLogs {
   summary: TradeLogSummary;
 }
 
+// Confirmed live 2026-07-16: IG's own position propagation can lag behind
+// an ambiguous confirmDeal response by up to a second or so. This runs after
+// the webhook has already responded (processed async — see WebhookController),
+// so it never risks the 3-second webhook deadline; the test-signal endpoint
+// is the only caller that waits on it, and a ~1s worst case is acceptable
+// for a dev tool.
+const RECONCILE_MAX_ATTEMPTS = 3;
+const RECONCILE_RETRY_DELAY_MS = 500;
+
 @Injectable()
 export class TradeService {
   private readonly logger = new Logger(TradeService.name);
@@ -268,6 +277,14 @@ export class TradeService {
    * throws: a failure here just means "couldn't reconcile," falling through
    * to the normal FAILED path, since this is a best-effort safety net on top
    * of confirmDeal, not a required step.
+   *
+   * Retries a few times with a short delay: confirmDeal's own "deal not
+   * found" ambiguity is IG-side propagation lag (the position isn't fully
+   * registered internally yet), and GET /positions can suffer the exact same
+   * lag — checking only once, immediately, risks a false "not found" that a
+   * few hundred milliseconds would have resolved (confirmed live 2026-07-16:
+   * OSCR filled on IG but an immediate reconciliation attempt still missed
+   * it before this retry was added).
    */
   private async reconcileAgainstOpenPositions(
     input: SignalInput,
@@ -275,29 +292,42 @@ export class TradeService {
     existingPosition: IgPosition | null,
     size: number,
   ): Promise<{ dealId: string; level: number | null } | null> {
-    try {
-      const positions = await this.igClientService.getOpenPositions();
+    for (let attempt = 1; attempt <= RECONCILE_MAX_ATTEMPTS; attempt++) {
+      try {
+        const positions = await this.igClientService.getOpenPositions();
 
-      if (input.direction === Direction.SELL) {
-        // Reconciled success = the position we tried to close is now gone.
-        if (existingPosition && !positions.some((p) => p.dealId === existingPosition.dealId)) {
-          return { dealId: existingPosition.dealId, level: null };
+        if (input.direction === Direction.SELL) {
+          // Reconciled success = the position we tried to close is now gone.
+          if (existingPosition && !positions.some((p) => p.dealId === existingPosition.dealId)) {
+            return { dealId: existingPosition.dealId, level: null };
+          }
+        } else {
+          // BUY: look for a newly opened position matching epic/direction/
+          // size — exact size match, since it's the precise value just sent.
+          const match = positions.find(
+            (p) =>
+              p.epic === mapping.igEpic &&
+              p.direction === Direction.BUY &&
+              Math.abs(p.size - size) < 0.0001,
+          );
+          if (match) {
+            return { dealId: match.dealId, level: match.level };
+          }
         }
-        return null;
+      } catch {
+        // A failed lookup attempt is retried the same as a genuine "no
+        // match yet" — either way, waiting and trying again is safe.
       }
 
-      // BUY: look for a newly opened position matching epic/direction/size —
-      // exact size match, since it's the precise value we just sent to IG.
-      const match = positions.find(
-        (p) =>
-          p.epic === mapping.igEpic &&
-          p.direction === Direction.BUY &&
-          Math.abs(p.size - size) < 0.0001,
-      );
-      return match ? { dealId: match.dealId, level: match.level } : null;
-    } catch {
-      return null;
+      if (attempt < RECONCILE_MAX_ATTEMPTS) {
+        await this.delay(RECONCILE_RETRY_DELAY_MS);
+      }
     }
+    return null;
+  }
+
+  private delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   // IG rejects levels more precise than the market's own quote precision
