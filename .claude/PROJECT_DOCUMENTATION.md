@@ -575,6 +575,16 @@ Controls the price a trade actually fills at, independent of how quantity is siz
 
 **What happens when a SIGNAL_PRICE limit order can't fill immediately — this is a deliberate scope decision, not a gap to fill in later:** this app does **not** track resting/working orders. If IG's `/positions/otc` LIMIT order doesn't fill straight away, it is handled exactly like a rejected market order — logged `FAILED` with whatever reason IG gives, and that's the end of it. There is no pending state, no polling for a later fill, no automatic cancellation timer. If real-world testing on IG demo shows this isn't the desired behaviour (e.g. you'd rather the order rest and fill later within the signal's acceptable-delay window), that's a bigger feature — a working-order lifecycle — and should be scoped separately rather than assumed.
 
+### Confirm-Deal Reconciliation (added 2026-07-16)
+
+**`GET /confirms/{dealReference}` is not reliable enough to trust alone.** Confirmed live across four separate real trades (GOOG, Coinbase, Gold ×2): the call either threw `error.confirms.deal-not-found` or otherwise failed to resolve cleanly, while IG's own transaction history showed the order had genuinely filled. Before this fix, every one of those trades was logged `FAILED` while a real position sat open on the account — the opposite of what the trade_log said.
+
+`TradeService.executeTrade` now treats **any** non-`ACCEPTED` outcome from `confirmDeal` — whether it threw or returned a different status — as *ambiguous*, not as a confirmed failure. Before logging FAILED, `reconcileAgainstOpenPositions()` calls `GET /positions` directly and checks:
+- **BUY**: is there now an open position on this epic, direction BUY, with the exact size just sent? If so, treat as SUCCESS using that position's real `dealId`/`level`.
+- **SELL**: has the position we tried to close (`existingPosition.dealId`) disappeared from the open positions list? If so, treat as SUCCESS (closing is confirmed; `executed_price` is left null since the exact close price isn't available from `/positions`, which only lists what's still open).
+
+If reconciliation itself fails (e.g. `/positions` is also unavailable) or finds no match, the trade falls through to the normal FAILED path exactly as before — this is a best-effort safety net on top of `confirmDeal`, never a required step, and it never throws into the trade's own error handling. A server-log warning is emitted whenever a reconciled SUCCESS occurs, so these events remain visible for monitoring even though they're not stored as a distinct trade_log flag.
+
 ### Dev Test Signal Endpoint (Manual Bypass)
 
 `POST /signal/test` (`SignalController`) lets a logged-in portal user run the exact same 11-step condition pipeline used by the real webhook, without waiting for TradingView. Body: `{ tvTicker, direction, price, investmentAmount?, executionMode?, maxSlippagePercent? }` — no `secret` field (portal-session auth via `JwtAuthGuard` instead). Unlike the real webhook it's `await`ed and returns the resulting `trade_log` row directly, since there's no 3-second TradingView timeout to respect and immediate feedback is the point.
@@ -869,10 +879,12 @@ Body: epic, direction (BUY/SELL), size (a £-per-point stake, NOT a share count 
 > **Spread bet account (Section 1), not CFD.** `expiry` must be the literal string `'DFB'` (Daily Funded Bet — the non-expiring spread-bet product, the spread-bet equivalent of a CFD's open-ended position) — `'-'` is CFD-only and gets the order rejected with `REJECT_CFD_ORDER_ON_SPREADBET_ACCOUNT`. `currencyCode` **is still required** on this endpoint regardless of account type — omitting it 400s with `validation.null-not-allowed.request.currencyCode`. (An earlier version of this doc said to drop `currencyCode` too; that was wrong — `expiry` was the actual fix for the CFD rejection, confirmed by testing both against the real IG demo account.)
 
 **5. Confirm Deal (GET /confirms/{dealReference}, v1)**
-Returns dealId, dealStatus (ACCEPTED/REJECTED), status (OPEN/CLOSED), and `level` — the actual fill price **in IG's points scale**; it is converted back to the signal-price scale via `normalizeIgPrice` before being stored as `trade_log.executed_price` (see Section 9 "Price scaling"). Always call after placing.
+Returns dealId, dealStatus (ACCEPTED/REJECTED), status (OPEN/CLOSED), and `level` — the actual fill price **in IG's points scale**; it is converted back to the signal-price scale before being stored as `trade_log.executed_price` (see Section 9 "Price scaling"). Always call after placing.
+
+> **This call is unreliable — never trust it alone (confirmed live 2026-07-16).** Across four separate real trades (GOOG, Coinbase, and Gold twice), `confirmDeal` either threw `error.confirms.deal-not-found` or otherwise failed to resolve, while IG's own history showed the order had genuinely filled. `TradeService.executeTrade` now treats any non-`ACCEPTED`/thrown result as ambiguous, not a confirmed failure, and reconciles against `GET /positions` before logging FAILED (`reconcileAgainstOpenPositions`) — see Section 9 "Confirm-deal reconciliation".
 
 **6. Get Open Positions (GET /positions, v2)**
-Returns array of positions with position.dealId, position.size, position.direction, market.epic, market.instrumentName. Used for all position checks.
+Returns array of positions with position.dealId, position.size, position.direction, position.level, market.epic, market.instrumentName. `level` (the open price, in IG's points scale) was added 2026-07-16 specifically to support confirm-deal reconciliation. Used for all position checks.
 
 **7. Close Position (DELETE /positions/otc, v1)**
 Body: dealId, direction (opposite of open), size, orderType (MARKET by default, or LIMIT — same Execution Mode setting as opening a position), `level` (only when LIMIT), expiry (`'DFB'`). Used when a SELL signal closes an existing long position.

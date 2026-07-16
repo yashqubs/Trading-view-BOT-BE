@@ -36,6 +36,9 @@ export interface IgPosition {
   epic: string;
   direction: Direction;
   size: number;
+  /** Open level, in IG's points scale — used to reconcile a trade whose
+   * confirmDeal call was ambiguous (see TradeService's reconciliation path). */
+  level: number | null;
 }
 
 export interface PlaceOrderParams {

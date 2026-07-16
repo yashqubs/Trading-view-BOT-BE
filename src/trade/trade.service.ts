@@ -5,7 +5,7 @@ import { Between, Repository, SelectQueryBuilder } from 'typeorm';
 import { Direction, ExecutionMode, TradeStatus } from '../common/enums';
 import { IgApiException } from '../ig-client/ig-api.exception';
 import { IgClientService } from '../ig-client/ig-client.service';
-import { IgPosition } from '../ig-client/ig-client.types';
+import { ConfirmDealResult, IgPosition } from '../ig-client/ig-client.types';
 import { StockMapping } from '../mapping/entities/stock-mapping.entity';
 import { resolveInvestmentAmount } from '../mapping/utils/resolve-investment-amount.util';
 import { TradingRules } from '../trading-rules/entities/trading-rules.entity';
@@ -182,33 +182,121 @@ export class TradeService {
         dealReference = result.dealReference;
       }
 
-      const confirmation = await this.igClientService.confirmDeal(dealReference);
-
-      if (confirmation.dealStatus !== 'ACCEPTED') {
-        return this.saveFailedAndHandle(baseLog, dealReference, confirmation.reason ?? 'REJECTED');
+      let confirmation: ConfirmDealResult | null = null;
+      let confirmError: unknown = null;
+      try {
+        confirmation = await this.igClientService.confirmDeal(dealReference);
+      } catch (error) {
+        confirmError = error;
       }
 
-      const successLog = await this.tradeLogRepository.save(
-        this.tradeLogRepository.create({
-          ...baseLog,
-          status: TradeStatus.SUCCESS,
-          dealReference,
-          dealId: confirmation.dealId,
-          // IG confirms in its own points scale; convert back with the factor
-          // derived from the live quote (not from the fill-vs-signal ratio,
-          // which a bad signal price would distort) so executed_price is
-          // comparable to signal_price everywhere.
-          executedPrice: confirmation.level != null ? confirmation.level / priceScaleFactor : null,
-          executedAt: new Date(),
-        }),
-      );
-      this.emitTradeCreated(successLog);
-      await this.emitPositionsUpdated();
+      if (!confirmation || confirmation.dealStatus !== 'ACCEPTED') {
+        // confirmDeal is sometimes ambiguous — it can throw (e.g. IG's
+        // `error.confirms.deal-not-found`) or come back non-ACCEPTED even
+        // when the order actually went through on IG's side. Confirmed live
+        // 2026-07-16 across four separate trades (GOOG, COIN, and Gold
+        // twice) where this app logged FAILED while IG's own history showed
+        // a real filled position. Never trust an ambiguous/negative confirm
+        // alone — check IG's actual open positions first.
+        const reconciled = await this.reconcileAgainstOpenPositions(
+          input,
+          mapping,
+          existingPosition,
+          size,
+        );
+        if (reconciled) {
+          this.logger.warn(
+            `Reconciled ${input.direction} ${input.tvTicker} as SUCCESS via open-positions lookup — ` +
+              `confirmDeal was ambiguous (${confirmError ? this.resolveErrorCode(confirmError) : confirmation?.reason}).`,
+          );
+          return this.saveSuccess(
+            baseLog,
+            dealReference,
+            reconciled.dealId,
+            reconciled.level,
+            priceScaleFactor,
+          );
+        }
+        const errorMessage = confirmError
+          ? this.resolveErrorCode(confirmError)
+          : (confirmation?.reason ?? 'REJECTED');
+        return this.saveFailedAndHandle(baseLog, dealReference, errorMessage);
+      }
 
-      await this.tradingRulesService.resetFailureCount();
-      return successLog;
+      return this.saveSuccess(
+        baseLog,
+        dealReference,
+        confirmation.dealId,
+        confirmation.level,
+        priceScaleFactor,
+      );
     } catch (error) {
       return this.saveFailedAndHandle(baseLog, null, this.resolveErrorCode(error));
+    }
+  }
+
+  private async saveSuccess(
+    baseLog: Partial<TradeLog>,
+    dealReference: string,
+    dealId: string,
+    level: number | null,
+    priceScaleFactor: number,
+  ): Promise<TradeLog> {
+    const successLog = await this.tradeLogRepository.save(
+      this.tradeLogRepository.create({
+        ...baseLog,
+        status: TradeStatus.SUCCESS,
+        dealReference,
+        dealId,
+        // IG confirms in its own points scale; convert back with the factor
+        // derived from the live quote (not from the fill-vs-signal ratio,
+        // which a bad signal price would distort) so executed_price is
+        // comparable to signal_price everywhere.
+        executedPrice: level != null ? level / priceScaleFactor : null,
+        executedAt: new Date(),
+      }),
+    );
+    this.emitTradeCreated(successLog);
+    await this.emitPositionsUpdated();
+    await this.tradingRulesService.resetFailureCount();
+    return successLog;
+  }
+
+  /**
+   * Called only when confirmDeal was ambiguous — checks IG's real open
+   * positions before trusting that ambiguity as a genuine failure. Never
+   * throws: a failure here just means "couldn't reconcile," falling through
+   * to the normal FAILED path, since this is a best-effort safety net on top
+   * of confirmDeal, not a required step.
+   */
+  private async reconcileAgainstOpenPositions(
+    input: SignalInput,
+    mapping: StockMapping,
+    existingPosition: IgPosition | null,
+    size: number,
+  ): Promise<{ dealId: string; level: number | null } | null> {
+    try {
+      const positions = await this.igClientService.getOpenPositions();
+
+      if (input.direction === Direction.SELL) {
+        // Reconciled success = the position we tried to close is now gone.
+        if (existingPosition && !positions.some((p) => p.dealId === existingPosition.dealId)) {
+          return { dealId: existingPosition.dealId, level: null };
+        }
+        return null;
+      }
+
+      // BUY: look for a newly opened position matching epic/direction/size —
+      // exact size match, since it's the precise value we just sent to IG.
+      const match = positions.find(
+        (p) =>
+          p.epic === mapping.igEpic &&
+          p.direction === Direction.BUY &&
+          Math.abs(p.size - size) < 0.0001,
+      );
+      return match ? { dealId: match.dealId, level: match.level } : null;
+    } catch {
+      return null;
     }
   }
 

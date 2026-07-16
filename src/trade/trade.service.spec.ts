@@ -505,6 +505,102 @@ describe('TradeService', () => {
       expect(igClientService.placeOrder).not.toHaveBeenCalled();
     });
 
+    it('reconciles a SUCCESS when confirmDeal throws but a matching position actually exists on IG', async () => {
+      // Confirmed live 2026-07-16: IG filled the order but confirmDeal threw
+      // error.confirms.deal-not-found — this app logged FAILED while a real
+      // position sat open. size 10 matches the default mapping/rules/input
+      // (investment 1000, price 100, factor 1).
+      igClientService.placeOrder.mockResolvedValue({ dealReference: 'REF-5' });
+      igClientService.confirmDeal.mockRejectedValue(
+        new IgApiException('error.confirms.deal-not-found'),
+      );
+      igClientService.getOpenPositions.mockResolvedValue([
+        { dealId: 'DEAL-5', epic: mapping.igEpic, direction: Direction.BUY, size: 10, level: 101 },
+      ]);
+
+      const result = await service.executeTrade(input, mapping, null, rules);
+
+      expect(result.status).toBe(TradeStatus.SUCCESS);
+      expect(result.dealId).toBe('DEAL-5');
+      expect(result.executedPrice).toBe(101);
+      expect(tradingRulesService.resetFailureCount).toHaveBeenCalled();
+    });
+
+    it('reconciles a SUCCESS even when confirmDeal explicitly returns REJECTED, if a matching position exists', async () => {
+      igClientService.placeOrder.mockResolvedValue({ dealReference: 'REF-6' });
+      igClientService.confirmDeal.mockResolvedValue({
+        dealId: 'DEAL-6',
+        dealStatus: 'REJECTED',
+        status: null,
+        reason: 'SOME_TRANSIENT_ERROR',
+        level: null,
+      });
+      igClientService.getOpenPositions.mockResolvedValue([
+        {
+          dealId: 'DEAL-6b',
+          epic: mapping.igEpic,
+          direction: Direction.BUY,
+          size: 10,
+          level: 99.5,
+        },
+      ]);
+
+      const result = await service.executeTrade(input, mapping, null, rules);
+
+      expect(result.status).toBe(TradeStatus.SUCCESS);
+      // Uses the reconciled position's own dealId/level, not confirmDeal's.
+      expect(result.dealId).toBe('DEAL-6b');
+      expect(result.executedPrice).toBe(99.5);
+    });
+
+    it('logs FAILED normally when confirmDeal throws and no matching position is found', async () => {
+      igClientService.placeOrder.mockResolvedValue({ dealReference: 'REF-7' });
+      igClientService.confirmDeal.mockRejectedValue(
+        new IgApiException('error.confirms.deal-not-found'),
+      );
+      igClientService.getOpenPositions.mockResolvedValue([]);
+
+      const result = await service.executeTrade(input, mapping, null, rules);
+
+      expect(result.status).toBe(TradeStatus.FAILED);
+      expect(result.errorMessage).toBe('error.confirms.deal-not-found');
+      expect(tradingRulesService.resetFailureCount).not.toHaveBeenCalled();
+    });
+
+    it('logs FAILED normally when confirmDeal throws AND the reconciliation lookup itself fails', async () => {
+      igClientService.placeOrder.mockResolvedValue({ dealReference: 'REF-8' });
+      igClientService.confirmDeal.mockRejectedValue(
+        new IgApiException('error.confirms.deal-not-found'),
+      );
+      igClientService.getOpenPositions.mockRejectedValue(new Error('IG API down'));
+
+      const result = await service.executeTrade(input, mapping, null, rules);
+
+      expect(result.status).toBe(TradeStatus.FAILED);
+      expect(result.errorMessage).toBe('error.confirms.deal-not-found');
+    });
+
+    it('does not reconcile against a position with the wrong size (avoids false positives)', async () => {
+      igClientService.placeOrder.mockResolvedValue({ dealReference: 'REF-9' });
+      igClientService.confirmDeal.mockRejectedValue(
+        new IgApiException('error.confirms.deal-not-found'),
+      );
+      // Same epic/direction, but a different size — must not match size:10.
+      igClientService.getOpenPositions.mockResolvedValue([
+        {
+          dealId: 'UNRELATED',
+          epic: mapping.igEpic,
+          direction: Direction.BUY,
+          size: 3,
+          level: 101,
+        },
+      ]);
+
+      const result = await service.executeTrade(input, mapping, null, rules);
+
+      expect(result.status).toBe(TradeStatus.FAILED);
+    });
+
     it('logs FAILED when IG rejects the deal', async () => {
       igClientService.placeOrder.mockResolvedValue({ dealReference: 'REF-2' });
       igClientService.confirmDeal.mockResolvedValue({
@@ -548,6 +644,7 @@ describe('TradeService', () => {
       epic: mapping.igEpic,
       direction: Direction.BUY,
       size: 10,
+      level: 100,
     };
 
     it('closes the existing position using its full size, and never sets a trade value', async () => {
@@ -609,6 +706,34 @@ describe('TradeService', () => {
         expect.objectContaining({ orderType: 'LIMIT', level: 99 }),
       );
       expect(result.tradeValue).toBeNull();
+    });
+
+    it('reconciles a SUCCESS on SELL when confirmDeal throws but the closed position is actually gone from IG', async () => {
+      igClientService.closePosition.mockResolvedValue({ dealReference: 'REF-10' });
+      igClientService.confirmDeal.mockRejectedValue(
+        new IgApiException('error.confirms.deal-not-found'),
+      );
+      // The position we tried to close (POS-1) no longer appears — closed.
+      igClientService.getOpenPositions.mockResolvedValue([]);
+
+      const result = await service.executeTrade(sellInput, mapping, existingPosition, rules);
+
+      expect(result.status).toBe(TradeStatus.SUCCESS);
+      expect(result.dealId).toBe('POS-1');
+      expect(result.tradeValue).toBeNull();
+    });
+
+    it('does not reconcile a SELL as SUCCESS if the position is still open on IG', async () => {
+      igClientService.closePosition.mockResolvedValue({ dealReference: 'REF-11' });
+      igClientService.confirmDeal.mockRejectedValue(
+        new IgApiException('error.confirms.deal-not-found'),
+      );
+      // POS-1 is still there — the close genuinely didn't happen.
+      igClientService.getOpenPositions.mockResolvedValue([existingPosition]);
+
+      const result = await service.executeTrade(sellInput, mapping, existingPosition, rules);
+
+      expect(result.status).toBe(TradeStatus.FAILED);
     });
   });
 });

@@ -227,6 +227,7 @@ describe('SignalService — condition pipeline', () => {
       epic: 'CS.D.AAPL.CASH.IP',
       direction: Direction.BUY,
       size: 10,
+      level: 100,
     };
     igClientService.getOpenPositions.mockResolvedValue([position]);
 
@@ -248,6 +249,7 @@ describe('SignalService — condition pipeline', () => {
       epic: 'CS.D.AAPL.CASH.IP',
       direction: Direction.BUY,
       size: 10,
+      level: 100,
     };
     igClientService.getOpenPositions.mockResolvedValue([position]);
 

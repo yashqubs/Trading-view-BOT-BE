@@ -34,7 +34,7 @@ interface IgSession {
 
 interface IgPositionsResponse {
   positions: Array<{
-    position: { dealId: string; size: number; direction: Direction };
+    position: { dealId: string; size: number; direction: Direction; level: number | null };
     market: { epic: string };
   }>;
 }
@@ -193,6 +193,7 @@ export class IgClientService {
       epic: entry.market.epic,
       direction: entry.position.direction,
       size: Number(entry.position.size),
+      level: entry.position.level != null ? Number(entry.position.level) : null,
     }));
   }
 
