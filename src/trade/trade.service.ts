@@ -158,6 +158,16 @@ export class TradeService {
       if (reference == null || reference <= 0) {
         throw new IgApiException('NO_LIVE_QUOTE');
       }
+      // Confirmed live 2026-07-16: a TSLA order rejected by IG for "Market
+      // closed" surfaced here as the unhelpful error.confirms.deal-not-found
+      // instead — IG's /confirms endpoint apparently never creates a
+      // trackable deal for an order rejected at the gateway level, so it had
+      // nothing real to report. We already fetch marketStatus for scaling;
+      // checking it before placing the order catches this case with the
+      // actual reason instead of discovering it via a vague confirm failure.
+      if (details.snapshot.marketStatus !== 'TRADEABLE') {
+        throw new IgApiException('MARKET_CLOSED');
+      }
       const priceScaleFactor = derivePriceScaleFactor(reference, input.signalPrice);
       assertSignalPricePlausible(reference, input.signalPrice, priceScaleFactor);
       const pricePoints = input.signalPrice * priceScaleFactor;

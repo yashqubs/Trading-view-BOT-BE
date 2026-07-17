@@ -505,6 +505,31 @@ describe('TradeService', () => {
       expect(igClientService.placeOrder).not.toHaveBeenCalled();
     });
 
+    it('logs FAILED with MARKET_CLOSED when the market has a live quote but is not tradeable', async () => {
+      // Confirmed live 2026-07-16: a real TSLA order was rejected by IG for
+      // "Market closed", but confirmDeal only returned the unhelpful
+      // error.confirms.deal-not-found — IG's confirms endpoint apparently
+      // never creates a trackable deal for a gateway-level rejection. Bid/
+      // offer can still be present (last known prices) even when the market
+      // isn't actually tradeable, so this must be checked separately from
+      // the NO_LIVE_QUOTE case above.
+      igClientService.getMarketDetails.mockResolvedValue({
+        snapshot: {
+          marketStatus: 'EDITS_ONLY',
+          bid: 99.8,
+          offer: 100.2,
+          decimalPlacesFactor: 2,
+          scalingFactor: 1,
+        },
+      });
+
+      const result = await service.executeTrade(input, mapping, null, rules);
+
+      expect(result.status).toBe(TradeStatus.FAILED);
+      expect(result.errorMessage).toBe('MARKET_CLOSED');
+      expect(igClientService.placeOrder).not.toHaveBeenCalled();
+    });
+
     it('reconciles a SUCCESS when confirmDeal throws but a matching position actually exists on IG', async () => {
       // Confirmed live 2026-07-16: IG filled the order but confirmDeal threw
       // error.confirms.deal-not-found — this app logged FAILED while a real
