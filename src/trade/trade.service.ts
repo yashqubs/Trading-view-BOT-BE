@@ -34,6 +34,19 @@ export interface PaginatedTradeLogs {
 const RECONCILE_MAX_ATTEMPTS = 3;
 const RECONCILE_RETRY_DELAY_MS = 500;
 
+// confirmDeal throwing (e.g. IG's `error.confirms.deal-not-found`) is the same
+// propagation lag as above, just on IG's confirms endpoint instead of its
+// positions list — so it's worth a few retries before falling back to
+// reconcileAgainstOpenPositions, which can prove a trade went through but,
+// for a close, can never recover the actual fill price (see its `level: null`
+// comment). A retry here often gets the real confirmDeal response instead —
+// confirmed live 2026-07-24: a PLTR close only got its executedPrice blank
+// because this wasn't yet retried. Genuinely rejected deals (e.g. the
+// ZETA/MLGO "Unborrowable stock" case) just throw the same way on every
+// attempt and fall through to the position-based fallback exactly as before.
+const CONFIRM_DEAL_MAX_ATTEMPTS = 3;
+const CONFIRM_DEAL_RETRY_DELAY_MS = 500;
+
 @Injectable()
 export class TradeService {
   private readonly logger = new Logger(TradeService.name);
@@ -224,10 +237,17 @@ export class TradeService {
 
       let confirmation: ConfirmDealResult | null = null;
       let confirmError: unknown = null;
-      try {
-        confirmation = await this.igClientService.confirmDeal(dealReference);
-      } catch (error) {
-        confirmError = error;
+      for (let attempt = 1; attempt <= CONFIRM_DEAL_MAX_ATTEMPTS; attempt++) {
+        try {
+          confirmation = await this.igClientService.confirmDeal(dealReference);
+          confirmError = null;
+          break;
+        } catch (error) {
+          confirmError = error;
+          if (attempt < CONFIRM_DEAL_MAX_ATTEMPTS) {
+            await this.delay(CONFIRM_DEAL_RETRY_DELAY_MS);
+          }
+        }
       }
 
       if (!confirmation || confirmation.dealStatus !== 'ACCEPTED') {
@@ -257,6 +277,14 @@ export class TradeService {
             priceScaleFactor,
           );
         }
+        // Not reconciled = genuinely never opened, e.g. a gateway-level
+        // rejection IG never created a trackable deal for (confirmed live
+        // 2026-07-24: SELL-to-open orders on ZETA/MLGO rejected as
+        // "Unborrowable stock" on IG's own activity history, surfacing here
+        // only as the same opaque error.confirms.deal-not-found the ambiguous
+        // case above uses). IG's REST API exposes no reason for this class of
+        // rejection — the frontend (tradeError.ts) explains the raw code
+        // rather than this service fabricating a specific cause it can't verify.
         const errorMessage = confirmError
           ? this.resolveErrorCode(confirmError)
           : (confirmation?.reason ?? 'REJECTED');

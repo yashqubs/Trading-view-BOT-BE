@@ -551,6 +551,29 @@ describe('TradeService', () => {
       expect(tradingRulesService.resetFailureCount).toHaveBeenCalled();
     });
 
+    it('retries confirmDeal and uses the real fill price once a later attempt succeeds', async () => {
+      // The ambiguity is on IG's confirms endpoint, not its positions list —
+      // a retry can succeed here even where reconcileAgainstOpenPositions
+      // (which only proves the deal exists, never its fill price) could not.
+      igClientService.placeOrder.mockResolvedValue({ dealReference: 'REF-5b' });
+      igClientService.confirmDeal
+        .mockRejectedValueOnce(new IgApiException('error.confirms.deal-not-found'))
+        .mockResolvedValueOnce({
+          dealId: 'DEAL-5b',
+          dealStatus: 'ACCEPTED',
+          status: 'OPEN',
+          reason: null,
+          level: 102.5,
+        });
+
+      const result = await service.executeTrade(input, mapping, null, rules);
+
+      expect(result.status).toBe(TradeStatus.SUCCESS);
+      expect(result.dealId).toBe('DEAL-5b');
+      expect(result.executedPrice).toBe(102.5);
+      expect(igClientService.confirmDeal).toHaveBeenCalledTimes(2);
+    });
+
     it('reconciles a SUCCESS even when confirmDeal explicitly returns REJECTED, if a matching position exists', async () => {
       igClientService.placeOrder.mockResolvedValue({ dealReference: 'REF-6' });
       igClientService.confirmDeal.mockResolvedValue({
@@ -590,6 +613,10 @@ describe('TradeService', () => {
       expect(result.status).toBe(TradeStatus.FAILED);
       expect(result.errorMessage).toBe('error.confirms.deal-not-found');
       expect(tradingRulesService.resetFailureCount).not.toHaveBeenCalled();
+      // A genuine rejection (e.g. ZETA/MLGO's "Unborrowable stock") throws the
+      // same way on every attempt — confirmDeal exhausts all its retries
+      // before falling back to the position-based reconciliation.
+      expect(igClientService.confirmDeal).toHaveBeenCalledTimes(3);
     });
 
     it('logs FAILED normally when confirmDeal throws AND the reconciliation lookup itself fails', async () => {
