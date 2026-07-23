@@ -314,10 +314,69 @@ describe('SignalService — condition pipeline', () => {
     const position = buildPosition({ direction: Direction.BUY });
     igClientService.getOpenPositions.mockResolvedValue([position]);
 
-    const result = await service.processSignal(buildInput({ direction: Direction.SELL }));
+    await service.processSignal(buildInput({ direction: Direction.SELL }));
 
-    expect(result.status).toBe(TradeStatus.SUCCESS);
-    expect(tradeService.executeTrade).toHaveBeenCalled();
+    // The close itself still goes out untouched by the throttle...
+    expect(tradeService.executeTrade).toHaveBeenCalledWith(
+      expect.objectContaining({ direction: Direction.SELL }),
+      expect.objectContaining({ tvTicker: 'AAPL' }),
+      position,
+      expect.objectContaining({ executionMode: ExecutionMode.MARKET }),
+    );
+  });
+
+  describe('reversal: opposite-direction position closes, then reopens in the new direction', () => {
+    it('closes then reopens fresh once the close succeeds and no throttle is hit', async () => {
+      const longPosition = buildPosition({ direction: Direction.BUY });
+      igClientService.getOpenPositions.mockResolvedValue([longPosition]);
+
+      const result = await service.processSignal(buildInput({ direction: Direction.SELL }));
+
+      expect(result.status).toBe(TradeStatus.SUCCESS);
+      expect(tradeService.executeTrade).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({ direction: Direction.SELL }),
+        expect.objectContaining({ tvTicker: 'AAPL' }),
+        longPosition, // leg 1: close the existing long
+        expect.objectContaining({ executionMode: ExecutionMode.MARKET }),
+      );
+      expect(tradeService.executeTrade).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ direction: Direction.SELL }),
+        expect.objectContaining({ tvTicker: 'AAPL' }),
+        null, // leg 2: open the new short from flat
+        expect.objectContaining({ executionMode: ExecutionMode.MARKET }),
+      );
+      expect(tradeService.executeTrade).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not attempt to reopen when the close itself fails', async () => {
+      const longPosition = buildPosition({ direction: Direction.BUY });
+      igClientService.getOpenPositions.mockResolvedValue([longPosition]);
+      tradeService.executeTrade.mockResolvedValueOnce({
+        status: TradeStatus.FAILED,
+      } as never);
+
+      const result = await service.processSignal(buildInput({ direction: Direction.SELL }));
+
+      expect(result.status).toBe(TradeStatus.FAILED);
+      expect(tradeService.executeTrade).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves the ticker flat (does not reopen) when the reopen leg is throttled', async () => {
+      tradingRulesService.get.mockResolvedValue(buildRules({ dailyMaxTradeCount: 1 }));
+      // First call (checked before the close, inside checkOpeningThrottles) is
+      // never reached for the close itself — only for the reopen leg after.
+      tradeService.countSuccessToday.mockResolvedValue(1);
+      const longPosition = buildPosition({ direction: Direction.BUY });
+      igClientService.getOpenPositions.mockResolvedValue([longPosition]);
+
+      const result = await service.processSignal(buildInput({ direction: Direction.SELL }));
+
+      expect(result.status).toBe(TradeStatus.DAILY_TRADE_LIMIT);
+      // Only the close went out — the throttled reopen never called executeTrade again.
+      expect(tradeService.executeTrade).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('duplicate signal detection', () => {

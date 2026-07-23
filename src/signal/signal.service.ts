@@ -2,11 +2,13 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Direction, TradeStatus } from '../common/enums';
 import { IgClientService } from '../ig-client/ig-client.service';
 import { IgPosition } from '../ig-client/ig-client.types';
+import { StockMapping } from '../mapping/entities/stock-mapping.entity';
 import { MappingService } from '../mapping/mapping.service';
 import { resolveInvestmentAmount } from '../mapping/utils/resolve-investment-amount.util';
 import { TradeLog } from '../trade/entities/trade-log.entity';
 import { SignalInput } from '../trade/interfaces/signal-input.interface';
 import { TradeService } from '../trade/trade.service';
+import { TradingRules } from '../trading-rules/entities/trading-rules.entity';
 import { TradingRulesService } from '../trading-rules/trading-rules.service';
 import { InFlightSignalTracker } from './in-flight-signal-tracker.service';
 
@@ -23,11 +25,20 @@ import { InFlightSignalTracker } from './in-flight-signal-tracker.service';
  *   - Position same direction: skipped (ALREADY_LONG / ALREADY_SHORT) — a
  *                              repeated same-direction signal must never
  *                              silently double exposure.
- *   - Position opposite direction: the signal CLOSES it — never throttled,
- *                              same reasoning as before short selling existed:
+ *   - Position opposite direction: the signal REVERSES it — closes the
+ *                              existing position first (never throttled, same
+ *                              reasoning as before short selling existed:
  *                              blocking a close over a daily cap would leave
- *                              unwanted exposure open, the unsafe outcome the
- *                              throttles exist to prevent in the first place.
+ *                              unwanted exposure open), then, only if that
+ *                              close succeeds, opens a fresh position in the
+ *                              signal's direction. That reopen IS new
+ *                              exposure, so it runs through the same daily
+ *                              throttles (steps 6-8) a from-flat open would.
+ *                              A throttled reopen just leaves the ticker flat
+ *                              rather than reversed — never blocked outright,
+ *                              since the close itself must never be withheld.
+ *                              If the close itself fails, no reopen is
+ *                              attempted (uncertain state — fail safe).
  * `TradeService.executeTrade` decides open-vs-close from whether
  * `existingPosition` is null, not from `input.direction` — direction alone no
  * longer determines behaviour now that either direction can open or close.
@@ -120,47 +131,88 @@ export class SignalService {
 
     // Opening NEW exposure = no position exists yet (BUY opens a long, SELL
     // opens a short). An opposite-direction position present means this
-    // signal CLOSES it instead — never throttled below, same reasoning as
-    // before short selling existed (blocking a close over a daily cap would
-    // leave unwanted exposure open).
+    // signal REVERSES it — see the class docstring.
     const isOpening = existingPosition === null;
 
     if (isOpening) {
-      // 6. daily trade count
-      if (rules.dailyMaxTradeCount !== null) {
-        const tradeCountToday = await this.tradeService.countSuccessToday();
-        if (tradeCountToday >= rules.dailyMaxTradeCount) {
-          return this.tradeService.logSkip(input, TradeStatus.DAILY_TRADE_LIMIT, mapping.igEpic);
-        }
+      const skipStatus = await this.checkOpeningThrottles(input, mapping, rules);
+      if (skipStatus) {
+        return this.tradeService.logSkip(input, skipStatus, mapping.igEpic);
       }
 
-      // 7. daily total investment
-      if (rules.dailyMaxTotalInvestment !== null) {
-        const investedToday = await this.tradeService.sumInvestmentSuccessToday();
-        const wouldBeInvested =
-          investedToday + resolveInvestmentAmount(mapping, rules, input.investmentAmountOverride);
-        if (wouldBeInvested > Number(rules.dailyMaxTotalInvestment)) {
-          return this.tradeService.logSkip(input, TradeStatus.DAILY_TOTAL_LIMIT, mapping.igEpic);
-        }
-      }
+      // 9. calculate size, execute on IG, log SUCCESS/FAILED, handle failure counter
+      this.logger.log(`Executing ${input.direction} for ${input.tvTicker} @ ${input.signalPrice}`);
+      return this.tradeService.executeTrade(input, mapping, null, rules);
+    }
 
-      // 8. stock daily spend
-      if (mapping.maxDailySpend !== null) {
-        const investedTodayForStock = await this.tradeService.sumInvestmentSuccessToday(
-          mapping.tvTicker,
-        );
-        const wouldBeInvested =
-          investedTodayForStock +
-          resolveInvestmentAmount(mapping, rules, input.investmentAmountOverride);
-        if (wouldBeInvested > Number(mapping.maxDailySpend)) {
-          return this.tradeService.logSkip(input, TradeStatus.STOCK_DAILY_LIMIT, mapping.igEpic);
-        }
+    // Reversal: close the existing opposite-direction position first — never
+    // throttled, same reasoning as before short selling existed (blocking a
+    // close over a daily cap would leave unwanted exposure open).
+    this.logger.log(
+      `Closing existing ${existingPosition.direction} position on ${input.tvTicker} to reverse into ${input.direction}`,
+    );
+    const closeLog = await this.tradeService.executeTrade(input, mapping, existingPosition, rules);
+    if (closeLog.status !== TradeStatus.SUCCESS) {
+      // Close didn't clearly go through — don't risk opening on top of an
+      // uncertain state. The failed close is already logged; return it.
+      return closeLog;
+    }
+
+    // The close freed up the ticker — reopening in the new direction is fresh
+    // exposure, so it's subject to the same daily throttles a from-flat open
+    // would face. A throttled reopen leaves the ticker flat (closed, not
+    // reversed) rather than blocking the close that already happened.
+    const skipStatus = await this.checkOpeningThrottles(input, mapping, rules);
+    if (skipStatus) {
+      return this.tradeService.logSkip(input, skipStatus, mapping.igEpic);
+    }
+
+    this.logger.log(
+      `Reopening ${input.direction} for ${input.tvTicker} @ ${input.signalPrice} after reversal`,
+    );
+    return this.tradeService.executeTrade(input, mapping, null, rules);
+  }
+
+  // Steps 6-8: only apply to genuinely new exposure — a fresh open from flat,
+  // or the reopen leg of a reversal after its close has succeeded. Returns
+  // the status to skip with, or null if none of the caps are hit.
+  private async checkOpeningThrottles(
+    input: SignalInput,
+    mapping: StockMapping,
+    rules: TradingRules,
+  ): Promise<TradeStatus | null> {
+    // 6. daily trade count
+    if (rules.dailyMaxTradeCount !== null) {
+      const tradeCountToday = await this.tradeService.countSuccessToday();
+      if (tradeCountToday >= rules.dailyMaxTradeCount) {
+        return TradeStatus.DAILY_TRADE_LIMIT;
       }
     }
 
-    // 9. calculate size, execute on IG, log SUCCESS/FAILED, handle failure counter
-    this.logger.log(`Executing ${input.direction} for ${input.tvTicker} @ ${input.signalPrice}`);
-    return this.tradeService.executeTrade(input, mapping, existingPosition, rules);
+    // 7. daily total investment
+    if (rules.dailyMaxTotalInvestment !== null) {
+      const investedToday = await this.tradeService.sumInvestmentSuccessToday();
+      const wouldBeInvested =
+        investedToday + resolveInvestmentAmount(mapping, rules, input.investmentAmountOverride);
+      if (wouldBeInvested > Number(rules.dailyMaxTotalInvestment)) {
+        return TradeStatus.DAILY_TOTAL_LIMIT;
+      }
+    }
+
+    // 8. stock daily spend
+    if (mapping.maxDailySpend !== null) {
+      const investedTodayForStock = await this.tradeService.sumInvestmentSuccessToday(
+        mapping.tvTicker,
+      );
+      const wouldBeInvested =
+        investedTodayForStock +
+        resolveInvestmentAmount(mapping, rules, input.investmentAmountOverride);
+      if (wouldBeInvested > Number(mapping.maxDailySpend)) {
+        return TradeStatus.STOCK_DAILY_LIMIT;
+      }
+    }
+
+    return null;
   }
 
   private isDuplicateSignal(input: SignalInput): boolean {
