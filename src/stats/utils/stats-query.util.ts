@@ -43,18 +43,26 @@ export function dateRangeBounds(from: string, to: string): [Date, Date] {
     throw new BadRequestException('from must not be after to');
   }
 
-  const todayEnd = new Date(
+  // The frontend deliberately builds "today" from the browser's LOCAL
+  // calendar day (DateRangePicker.tsx), not UTC — for timezones ahead of UTC
+  // (e.g. IST, UTC+5:30) the local day flips over before UTC's does, so for
+  // several hours every day a legitimate "today" preset is, in UTC terms,
+  // still "tomorrow". Comparing against UTC's current day alone rejected
+  // that as future (confirmed live 2026-07-24). Allowing one extra day of
+  // slack covers every real-world offset (max is UTC+14) while still
+  // catching genuinely bogus far-future dates.
+  const maxAllowedEnd = new Date(
     Date.UTC(
       new Date().getUTCFullYear(),
       new Date().getUTCMonth(),
-      new Date().getUTCDate(),
+      new Date().getUTCDate() + 1,
       23,
       59,
       59,
       999,
     ),
   );
-  if (end.getTime() > todayEnd.getTime()) {
+  if (end.getTime() > maxAllowedEnd.getTime()) {
     throw new BadRequestException('to must not be in the future');
   }
 

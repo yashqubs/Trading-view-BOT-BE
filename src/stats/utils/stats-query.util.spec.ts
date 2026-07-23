@@ -61,11 +61,21 @@ describe('stats-query.util', () => {
       );
     });
 
-    it('throws when to is in the future', () => {
+    it('throws when to is well beyond any timezone\'s "today"', () => {
       const future = new Date(Date.now() + 10 * 24 * 60 * 60 * 1000);
       const futureStr = future.toISOString().slice(0, 10);
 
       expect(() => dateRangeBounds(futureStr, futureStr)).toThrow('to must not be in the future');
+    });
+
+    it('accepts UTC "tomorrow" as to — a timezone ahead of UTC (e.g. IST) sees that as today', () => {
+      // Confirmed live 2026-07-24: IST (UTC+5:30) flips to a new local day
+      // hours before UTC does, so the frontend's local-time "today" preset
+      // legitimately lands on UTC tomorrow for part of every day.
+      const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000);
+      const tomorrowStr = tomorrow.toISOString().slice(0, 10);
+
+      expect(() => dateRangeBounds(tomorrowStr, tomorrowStr)).not.toThrow();
     });
 
     it('throws on a malformed date', () => {
