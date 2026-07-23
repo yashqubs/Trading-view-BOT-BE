@@ -25,15 +25,17 @@ export class TradeLog {
   })
   signalPrice: number;
 
-  // The real £ notional actually committed — size × price-in-points — for a
-  // BUY that reached a computed size. Always null for SELL (closing an
-  // existing position is never a new investment) and for any BUY that never
-  // got that far (skipped, or failed before sizing — e.g. too small for
-  // IG's minimum deal size). Deliberately NOT the configured investment
-  // amount input: that number only reflects intent, and showing it here
-  // regardless of what was actually sized/sent to IG was misleading (see
-  // the PayPal case 2026-07-14 where "£2,000 invested" was actually
-  // ~£90,000+ of real notional under the old shares-based sizing bug).
+  // The real £ notional — size × price-in-points — for any trade that
+  // reached a computed size, open OR close (closes included since
+  // 2026-07-24). Null only for a trade that never got that far (skipped, or
+  // failed before sizing — e.g. too small for IG's minimum deal size).
+  // Deliberately NOT the configured investment amount input: that number
+  // only reflects intent, and showing it here regardless of what was
+  // actually sized/sent to IG was misleading (see the PayPal case 2026-07-14
+  // where "£2,000 invested" was actually ~£90,000+ of real notional under
+  // the old shares-based sizing bug). A close's notional is real money too,
+  // but it's not NEW investment — see isClosingTrade for how every "money
+  // invested" aggregate/cap tells the two apart.
   @Column({
     type: 'decimal',
     precision: 12,
@@ -43,6 +45,15 @@ export class TradeLog {
     transformer: decimalTransformer,
   })
   tradeValue: number | null;
+
+  // True when this row closed an existing position rather than opening new
+  // exposure (open vs close is decided by whether existingPosition was null,
+  // NOT by direction — see TradeService.executeTrade). Every "money
+  // invested" aggregate (daily caps, dashboard/per-stock stats) filters this
+  // out so a close's tradeValue is shown but never counted as fresh
+  // investment.
+  @Column({ type: 'boolean', default: false, name: 'is_closing_trade' })
+  isClosingTrade: boolean;
 
   // IG's `size` — a £-per-point stake for BUY (see calculateSize), or the
   // exact size of the position being closed for SELL. NOT a share count.

@@ -146,6 +146,7 @@ describe('TradeService', () => {
       // protection that wasn't active.
       expect(result.maxSlippagePercent).toBeNull();
       expect(tradingRulesService.resetFailureCount).toHaveBeenCalled();
+      expect(result.isClosingTrade).toBe(false);
     });
 
     it('sizes the order off the global default investment when the stock has no override', async () => {
@@ -699,7 +700,7 @@ describe('TradeService', () => {
       level: 100,
     };
 
-    it('closes the existing position using its full size, and never sets a trade value', async () => {
+    it('closes the existing position using its full size, and shows the real £ notional but flags it as not new investment', async () => {
       igClientService.closePosition.mockResolvedValue({ dealReference: 'REF-3' });
       igClientService.confirmDeal.mockResolvedValue({
         dealId: 'DEAL-3',
@@ -720,9 +721,12 @@ describe('TradeService', () => {
       });
       expect(result.status).toBe(TradeStatus.SUCCESS);
       expect(result.executedPrice).toBe(108.5);
-      // Closing a position is never a new investment.
-      expect(result.tradeValue).toBeNull();
+      // The close's real £ notional is shown (size 10 × pricePoints 110)...
+      expect(result.tradeValue).toBe(1100);
       expect(result.size).toBe(10);
+      // ...but flagged so it's never counted as new investment (daily
+      // caps/stats all filter on this rather than a null tradeValue).
+      expect(result.isClosingTrade).toBe(true);
     });
 
     it('applies the slippage tolerance the opposite direction on a SELL (floor, not ceiling)', async () => {
@@ -749,7 +753,8 @@ describe('TradeService', () => {
       expect(igClientService.closePosition).toHaveBeenCalledWith(
         expect.objectContaining({ orderType: 'LIMIT', level: 99 }),
       );
-      expect(result.tradeValue).toBeNull();
+      expect(result.tradeValue).toBe(1000);
+      expect(result.isClosingTrade).toBe(true);
     });
 
     it('reconciles a SUCCESS on SELL when confirmDeal throws but the closed position is actually gone from IG', async () => {
@@ -764,7 +769,8 @@ describe('TradeService', () => {
 
       expect(result.status).toBe(TradeStatus.SUCCESS);
       expect(result.dealId).toBe('POS-1');
-      expect(result.tradeValue).toBeNull();
+      expect(result.tradeValue).toBe(1000);
+      expect(result.isClosingTrade).toBe(true);
     });
 
     it('does not reconcile a SELL as SUCCESS if the position is still open on IG', async () => {
@@ -861,8 +867,10 @@ describe('TradeService', () => {
       expect(igClientService.placeOrder).not.toHaveBeenCalled();
       expect(result.status).toBe(TradeStatus.SUCCESS);
       expect(result.size).toBe(5);
-      // Closing is never a new investment, whichever direction is closed.
-      expect(result.tradeValue).toBeNull();
+      // Real notional is shown (5 × 100) whichever direction is closed, but
+      // still flagged as not new investment.
+      expect(result.tradeValue).toBe(500);
+      expect(result.isClosingTrade).toBe(true);
     });
 
     it('uses the offer (not bid) as the plausibility/scale reference when a BUY closes a short', async () => {

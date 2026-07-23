@@ -61,6 +61,7 @@ export class StatsService {
       .createQueryBuilder('trade')
       .select('COALESCE(SUM(trade.tradeValue), 0)', 'total')
       .where('trade.status = :status', { status: TradeStatus.SUCCESS })
+      .andWhere('trade.isClosingTrade = false')
       .andWhere('trade.createdAt BETWEEN :start AND :end', { start, end });
     if (filter.ticker) {
       todaysInvestedBase.andWhere('trade.tvTicker = :ticker', { ticker: filter.ticker });
@@ -123,7 +124,7 @@ export class StatsService {
         .select("TO_CHAR(trade.createdAt, 'YYYY-MM-DD')", 'date')
         .addSelect('COUNT(*)', 'trades')
         .addSelect(
-          'COALESCE(SUM(CASE WHEN trade.status = :success THEN trade.tradeValue ELSE 0 END), 0)',
+          'COALESCE(SUM(CASE WHEN trade.status = :success AND trade.isClosingTrade = false THEN trade.tradeValue ELSE 0 END), 0)',
           'invested',
         )
         .where('trade.status IN (:...statuses)', { statuses: EXECUTED_STATUSES })
@@ -173,7 +174,7 @@ export class StatsService {
         .select('trade.tvTicker', 'tvTicker')
         .addSelect('COUNT(*)', 'trades')
         .addSelect(
-          'COALESCE(SUM(CASE WHEN trade.status = :success THEN trade.tradeValue ELSE 0 END), 0)',
+          'COALESCE(SUM(CASE WHEN trade.status = :success AND trade.isClosingTrade = false THEN trade.tradeValue ELSE 0 END), 0)',
           'invested',
         )
         .where('trade.status IN (:...statuses)', { statuses: EXECUTED_STATUSES })
@@ -215,7 +216,7 @@ export class StatsService {
         .createQueryBuilder('trade')
         .select('COUNT(*)', 'totalTrades')
         .addSelect(
-          'COALESCE(SUM(CASE WHEN trade.status = :success THEN trade.tradeValue ELSE 0 END), 0)',
+          'COALESCE(SUM(CASE WHEN trade.status = :success AND trade.isClosingTrade = false THEN trade.tradeValue ELSE 0 END), 0)',
           'totalInvested',
         )
         .addSelect('SUM(CASE WHEN trade.direction = :buy THEN 1 ELSE 0 END)', 'buyCount')
@@ -352,7 +353,8 @@ export class StatsService {
         .select("TO_CHAR(trade.createdAt, 'YYYY-MM-DD')", 'date')
         .addSelect('COALESCE(SUM(trade.tradeValue), 0)', 'invested')
         .where('trade.tvTicker = :tvTicker', { tvTicker })
-        .andWhere('trade.status = :status', { status: TradeStatus.SUCCESS }),
+        .andWhere('trade.status = :status', { status: TradeStatus.SUCCESS })
+        .andWhere('trade.isClosingTrade = false'),
       filter,
     )
       .groupBy('date')

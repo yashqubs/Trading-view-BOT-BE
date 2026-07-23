@@ -132,6 +132,7 @@ export class TradeService {
       size: number | null;
       maxSlippagePercent: number | null;
       signalReceivedAt: Date;
+      isClosingTrade: boolean;
     } = {
       tvTicker: input.tvTicker,
       igEpic: mapping.igEpic,
@@ -143,6 +144,7 @@ export class TradeService {
       // trades so the history doesn't imply a protection that wasn't active.
       maxSlippagePercent: executionMode === ExecutionMode.SIGNAL_PRICE ? maxSlippagePercent : null,
       signalReceivedAt: input.signalReceivedAt,
+      isClosingTrade: existingPosition !== null,
     };
 
     try {
@@ -187,9 +189,10 @@ export class TradeService {
 
       let size: number;
       if (isClosing) {
-        // Closing a position (long or short) is never a new investment —
-        // tradeValue stays null (see the entity comment); size is whatever
-        // the existing position is.
+        // Size is whatever the existing position is — closing is never a
+        // NEW investment, but its real £ notional is still shown below;
+        // isClosingTrade (set above) is what keeps it out of every "money
+        // invested" aggregate/cap, not a null tradeValue.
         size = existingPosition!.size;
       } else {
         size = calculateSize(investmentAmount, pricePoints);
@@ -200,9 +203,9 @@ export class TradeService {
             `Investment amount is too small — IG's minimum for ${mapping.tvTicker} at the current price is approximately £${minInvestment.toFixed(2)}`,
           );
         }
-        baseLog.tradeValue = Number((size * pricePoints).toFixed(2));
       }
       baseLog.size = size;
+      baseLog.tradeValue = Number((size * pricePoints).toFixed(2));
 
       const igOrderParams =
         executionMode === ExecutionMode.SIGNAL_PRICE
@@ -468,11 +471,11 @@ export class TradeService {
       .addSelect(`SUM(CASE WHEN trade.direction = :buyDirection THEN 1 ELSE 0 END)`, 'buyCount')
       .addSelect(`SUM(CASE WHEN trade.direction = :sellDirection THEN 1 ELSE 0 END)`, 'sellCount')
       .addSelect(
-        `COALESCE(SUM(CASE WHEN trade.status = :successStatus AND trade.tradeValue IS NOT NULL THEN trade.tradeValue ELSE 0 END), 0)`,
+        `COALESCE(SUM(CASE WHEN trade.status = :successStatus AND trade.isClosingTrade = false AND trade.tradeValue IS NOT NULL THEN trade.tradeValue ELSE 0 END), 0)`,
         'totalInvested',
       )
       .addSelect(
-        `AVG(CASE WHEN trade.status = :successStatus AND trade.tradeValue IS NOT NULL THEN trade.tradeValue END)`,
+        `AVG(CASE WHEN trade.status = :successStatus AND trade.isClosingTrade = false AND trade.tradeValue IS NOT NULL THEN trade.tradeValue END)`,
         'avgInvestment',
       )
       .setParameters({
@@ -518,11 +521,15 @@ export class TradeService {
     });
   }
 
+  // Feeds the daily investment/spend caps — only NEW investment counts
+  // against them, so closes (real notional, but never new exposure) are
+  // excluded via isClosingTrade even though tradeValue is populated for both.
   async sumInvestmentSuccessToday(tvTicker?: string): Promise<number> {
     const qb = this.tradeLogRepository
       .createQueryBuilder('trade')
       .select('COALESCE(SUM(trade.tradeValue), 0)', 'total')
       .where('trade.status = :status', { status: TradeStatus.SUCCESS })
+      .andWhere('trade.isClosingTrade = false')
       .andWhere('trade.createdAt BETWEEN :from AND :to', {
         from: this.todayRange()[0],
         to: this.todayRange()[1],
