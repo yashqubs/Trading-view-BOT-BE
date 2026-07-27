@@ -11,8 +11,10 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
+import { PaginatedResult } from '../common/interfaces/paginated.interface';
 import { CreateStockMappingDto } from './dto/create-stock-mapping.dto';
 import { SearchMarketsDto } from './dto/search-markets.dto';
+import { StockMappingQueryDto } from './dto/stock-mapping-query.dto';
 import { UpdateStockMappingDto } from './dto/update-stock-mapping.dto';
 import { StockMapping } from './entities/stock-mapping.entity';
 import { MappingService } from './mapping.service';
@@ -24,8 +26,13 @@ export class MappingController {
   constructor(private readonly mappingService: MappingService) {}
 
   @Get()
-  findAll(): Promise<StockMapping[]> {
-    return this.mappingService.findAll();
+  findAll(@Query() query: StockMappingQueryDto): Promise<PaginatedResult<StockMapping>> {
+    return this.mappingService.findAllPaginated(query);
+  }
+
+  @Get('tickers')
+  listTickers(): Promise<string[]> {
+    return this.mappingService.listTickers();
   }
 
   @Get('search')

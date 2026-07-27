@@ -17,6 +17,9 @@ import {
   StockActivity,
   StockStats,
 } from './interfaces/stats.interfaces';
+import { PaginatedResult } from '../common/interfaces/paginated.interface';
+import { OpenPositionsQueryDto } from './dto/open-positions-query.dto';
+import { OpenPositionsSortBy, SortOrder } from './dto/open-positions-sort.enum';
 import { applyStatsFilters, StatsFilterOptions, toStatsFilter } from './utils/stats-query.util';
 
 const EXECUTED_STATUSES = [TradeStatus.SUCCESS, TradeStatus.FAILED];
@@ -142,7 +145,10 @@ export class StatsService {
     }));
   }
 
-  async openPositions(ticker?: string): Promise<OpenPosition[]> {
+  async openPositions(query: OpenPositionsQueryDto = {}): Promise<PaginatedResult<OpenPosition>> {
+    const page = query.page ?? 1;
+    const pageSize = query.pageSize ?? 25;
+
     const [positions, mappings] = await Promise.all([
       this.igClientService.getOpenPositions(),
       this.mappingService.findAll(),
@@ -150,7 +156,7 @@ export class StatsService {
 
     const byEpic = new Map(mappings.map((mapping) => [mapping.igEpic, mapping]));
 
-    return positions
+    let items = positions
       .map((position) => {
         const mapping = byEpic.get(position.epic);
         return {
@@ -162,7 +168,40 @@ export class StatsService {
           mapped: !!mapping,
         };
       })
-      .filter((position) => !ticker || position.tvTicker === ticker);
+      .filter((position) => !query.ticker || position.tvTicker === query.ticker);
+
+    if (query.search?.trim()) {
+      const term = query.search.trim().toLowerCase();
+      items = items.filter(
+        (position) =>
+          position.tvTicker.toLowerCase().includes(term) ||
+          position.instrumentName.toLowerCase().includes(term),
+      );
+    }
+
+    if (query.direction) {
+      items = items.filter((position) => position.direction === query.direction);
+    }
+
+    const sortBy = query.sortBy ?? OpenPositionsSortBy.TV_TICKER;
+    const sortOrder = query.sortOrder ?? SortOrder.ASC;
+    const dir = sortOrder === SortOrder.ASC ? 1 : -1;
+
+    items.sort((a, b) => {
+      switch (sortBy) {
+        case OpenPositionsSortBy.DIRECTION:
+          return a.direction.localeCompare(b.direction) * dir;
+        case OpenPositionsSortBy.SIZE:
+          return (a.size - b.size) * dir;
+        case OpenPositionsSortBy.TV_TICKER:
+        default:
+          return a.tvTicker.localeCompare(b.tvTicker) * dir;
+      }
+    });
+
+    const total = items.length;
+    const start = (page - 1) * pageSize;
+    return { items: items.slice(start, start + pageSize), total };
   }
 
   async byStock(query: StatsDaysQueryDto = {}): Promise<StockActivity[]> {

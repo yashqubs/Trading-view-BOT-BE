@@ -1,10 +1,13 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, SelectQueryBuilder } from 'typeorm';
+import { PaginatedResult } from '../common/interfaces/paginated.interface';
 import { IgClientService } from '../ig-client/ig-client.service';
 import { IgMarket } from '../ig-client/ig-client.types';
 import { TradingRulesService } from '../trading-rules/trading-rules.service';
 import { CreateStockMappingDto } from './dto/create-stock-mapping.dto';
+import { StockMappingQueryDto } from './dto/stock-mapping-query.dto';
+import { SortOrder, StockMappingSortBy } from './dto/stock-mapping-sort.enum';
 import { UpdateStockMappingDto } from './dto/update-stock-mapping.dto';
 import { StockMapping } from './entities/stock-mapping.entity';
 import { resolveInvestmentAmount } from './utils/resolve-investment-amount.util';
@@ -20,6 +23,73 @@ export class MappingService {
 
   findAll(): Promise<StockMapping[]> {
     return this.stockMappingRepository.find({ order: { createdAt: 'DESC' } });
+  }
+
+  listTickers(): Promise<string[]> {
+    return this.stockMappingRepository
+      .find({ select: ['tvTicker'], order: { tvTicker: 'ASC' } })
+      .then((rows) => rows.map((row) => row.tvTicker));
+  }
+
+  async findAllPaginated(query: StockMappingQueryDto): Promise<PaginatedResult<StockMapping>> {
+    const page = query.page ?? 1;
+    const pageSize = query.pageSize ?? 25;
+
+    const countQb = this.buildFilteredQuery(query);
+    const total = await countQb.getCount();
+
+    const itemsQb = this.buildFilteredQuery(query);
+    await this.applySort(itemsQb, query);
+    itemsQb.skip((page - 1) * pageSize).take(pageSize);
+
+    const items = await itemsQb.getMany();
+    return { items, total };
+  }
+
+  private buildFilteredQuery(query: StockMappingQueryDto): SelectQueryBuilder<StockMapping> {
+    const qb = this.stockMappingRepository.createQueryBuilder('mapping');
+
+    if (query.search?.trim()) {
+      const term = `%${query.search.trim().toLowerCase()}%`;
+      qb.andWhere(
+        '(LOWER(mapping.tvTicker) LIKE :term OR LOWER(mapping.instrumentName) LIKE :term)',
+        { term },
+      );
+    }
+
+    if (query.enabled !== undefined) {
+      qb.andWhere('mapping.enabled = :enabled', { enabled: query.enabled });
+    }
+
+    return qb;
+  }
+
+  private async applySort(
+    qb: SelectQueryBuilder<StockMapping>,
+    query: StockMappingQueryDto,
+  ): Promise<void> {
+    const sortBy = query.sortBy ?? StockMappingSortBy.CREATED_AT;
+    const sortOrder = (query.sortOrder ?? SortOrder.DESC).toUpperCase() as 'ASC' | 'DESC';
+
+    switch (sortBy) {
+      case StockMappingSortBy.TV_TICKER:
+        qb.orderBy('mapping.tvTicker', sortOrder);
+        return;
+      case StockMappingSortBy.INVESTMENT_AMOUNT: {
+        const rules = await this.tradingRulesService.get();
+        qb.orderBy('COALESCE(mapping.investment_amount, :defaultInvestment)', sortOrder).setParameter(
+          'defaultInvestment',
+          rules.investmentAmount,
+        );
+        return;
+      }
+      case StockMappingSortBy.MAX_DAILY_SPEND:
+        qb.orderBy('mapping.max_daily_spend', sortOrder, 'NULLS LAST');
+        return;
+      case StockMappingSortBy.CREATED_AT:
+      default:
+        qb.orderBy('mapping.created_at', sortOrder);
+    }
   }
 
   async findByIdOrThrow(id: number): Promise<StockMapping> {

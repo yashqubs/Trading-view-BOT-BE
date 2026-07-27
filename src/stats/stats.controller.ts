@@ -1,5 +1,6 @@
 import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
+import { PaginatedResult } from '../common/interfaces/paginated.interface';
 import { DailyActivityQueryDto } from './dto/daily-activity-query.dto';
 import { OpenPositionsQueryDto } from './dto/open-positions-query.dto';
 import { StatsDaysQueryDto } from './dto/stats-days-query.dto';
@@ -35,8 +36,8 @@ export class StatsController {
   }
 
   @Get('open-positions')
-  openPositions(@Query() query: OpenPositionsQueryDto): Promise<OpenPosition[]> {
-    return this.statsService.openPositions(query.ticker);
+  openPositions(@Query() query: OpenPositionsQueryDto): Promise<PaginatedResult<OpenPosition>> {
+    return this.statsService.openPositions(query);
   }
 
   @Get('status-breakdown')
