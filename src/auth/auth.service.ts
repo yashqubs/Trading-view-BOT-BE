@@ -216,6 +216,11 @@ export class AuthService {
   async refresh(refreshToken: string | undefined, response: Response): Promise<User> {
     const invalid = new UnauthorizedException('Session expired');
     if (!refreshToken) {
+      // No refresh cookie at all, so there is no rotation race to protect
+      // here (see below) — nothing could have replaced it. This is
+      // unambiguously a dead session, so tear down whatever cookies are left
+      // rather than leaving the browser to keep presenting them.
+      this.sessionService.clearCookie(response);
       throw invalid;
     }
 

@@ -70,6 +70,19 @@ describe('CsrfGuard', () => {
     expect(guard.canActivate(context)).toBe(true);
   });
 
+  it('allows logout with a stale access_token cookie and no CSRF cookie left', () => {
+    // Logout is the server-side way to clean up a broken cookie jar, so it
+    // has to work with one. Blocking it here is what forced users to clear
+    // cookies by hand to get back in.
+    const context = buildContext({
+      method: 'POST',
+      path: '/api/auth/logout',
+      cookies: { access_token: 'stale-jwt' },
+      headers: {},
+    });
+    expect(guard.canActivate(context)).toBe(true);
+  });
+
   it('still rejects non-exempt auth routes without a CSRF header (e.g. 2fa enable)', () => {
     const context = buildContext({
       method: 'POST',

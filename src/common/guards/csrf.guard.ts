@@ -22,6 +22,12 @@ const CSRF_EXEMPT_PATH_PREFIXES = [
   '/api/auth/reset-password',
   '/auth/refresh',
   '/api/auth/refresh',
+  // Logout must stay reachable with a broken or half-expired cookie jar —
+  // it's the server-side way to clean one up. A forged cross-site logout is a
+  // nuisance at worst (SameSite=Strict already blocks it), and refusing it is
+  // what left users stuck clearing cookies manually.
+  '/auth/logout',
+  '/api/auth/logout',
 ];
 
 /**

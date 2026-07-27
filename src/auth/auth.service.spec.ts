@@ -404,9 +404,13 @@ describe('AuthService', () => {
   });
 
   describe('refresh', () => {
-    it('rejects with no refresh cookie at all', async () => {
+    it('rejects AND clears cookies with no refresh cookie at all', async () => {
+      // Nothing to rotate means there's no race to protect (unlike the case
+      // below), so this is unambiguously a dead session — leave nothing behind
+      // for the browser to keep presenting.
       await expect(service.refresh(undefined, mockResponse)).rejects.toThrow(UnauthorizedException);
       expect(refreshTokenService.rotate).not.toHaveBeenCalled();
+      expect(sessionService.clearCookie).toHaveBeenCalledWith(mockResponse);
     });
 
     it('rejects WITHOUT clearing cookies when the refresh token is unknown/expired', async () => {

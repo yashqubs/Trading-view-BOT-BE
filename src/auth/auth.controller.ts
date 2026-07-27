@@ -113,9 +113,14 @@ export class AuthController {
     return { user: updatedUser };
   }
 
+  // Deliberately NOT behind JwtAuthGuard. Logging out destroys authority
+  // rather than exercising it, so there is nothing for a guard to protect —
+  // and requiring a valid session to end one is exactly backwards: the user
+  // who most needs their cookies cleared is the one whose session already
+  // died. That case used to 401 here, leaving the stale cookies in the
+  // browser with no server-side way to remove them, so the only escape was
+  // clearing cookies by hand. Always succeeds, whatever it was handed.
   @Post('logout')
-  @UseGuards(JwtAuthGuard)
-  @AllowPendingSession()
   @HttpCode(HttpStatus.OK)
   async logout(
     @Req() request: Request,

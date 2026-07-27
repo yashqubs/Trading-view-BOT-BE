@@ -76,7 +76,7 @@ async function bootstrap(): Promise<void> {
     }),
   );
 
-  app.useGlobalFilters(new GlobalExceptionFilter());
+  app.useGlobalFilters(new GlobalExceptionFilter(configService.get<string>('CSRF_COOKIE_DOMAIN')));
 
   const port = configService.get<number>('PORT', 3000);
 

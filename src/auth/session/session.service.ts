@@ -9,6 +9,7 @@ import { SecretsService } from '../../secrets/secrets.service';
 import { User } from '../../user/entities/user.entity';
 import { JwtPayload } from '../interfaces/jwt-payload.interface';
 import { RefreshTokenService } from './refresh-token.service';
+import { clearAllSessionCookies } from './session-cookies';
 import {
   ACCESS_TOKEN_COOKIE_MAX_AGE_MS,
   ACCESS_TOKEN_EXPIRY,
@@ -121,14 +122,6 @@ export class SessionService {
   }
 
   clearCookie(response: Response): void {
-    response.clearCookie('access_token');
-    // Both variants: host-only (local dev / pre-CSRF_COOKIE_DOMAIN sessions)
-    // and domain-scoped — deletion only matches a cookie whose domain matches.
-    response.clearCookie('csrf_token');
-    const csrfCookieDomain = this.configService.get<string>('CSRF_COOKIE_DOMAIN');
-    if (csrfCookieDomain) {
-      response.clearCookie('csrf_token', { domain: csrfCookieDomain });
-    }
-    response.clearCookie('refresh_token');
+    clearAllSessionCookies(response, this.configService.get<string>('CSRF_COOKIE_DOMAIN'));
   }
 }
