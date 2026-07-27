@@ -15,8 +15,10 @@ Execute in order and report results:
 Then do a manual review and report on:
 
 6. **Secret safety** — grep the codebase for hardcoded secrets, API keys, passwords, or any `.env` secret reads. Confirm all sensitive values come from SecretsModule.
-7. **Trade safety** — confirm the signal pipeline condition order is intact, SELL position check is present, quantity math guards divide-by-zero, and consecutive-failure auto-pause is wired up.
+7. **Trade safety** — confirm the signal pipeline condition order is intact; the existing-position resolution (step 5) still runs ahead of the daily throttles and branches three ways (open / skip same-direction / reverse); the size math is the £-per-point stake formula with its divide-by-zero, floor-to-zero, and `minDealSize` guards; the live-quote gates (`NO_LIVE_QUOTE`, `MARKET_CLOSED`, signal-price plausibility) still run before any order; ambiguous `confirmDeal` results still reconcile against open positions before logging FAILED; and consecutive-failure auto-pause is wired up. Run `/audit-trade-path` for the deep version.
 8. **Logging safety** — confirm no logger call outputs secrets, passwords, tokens, or full IG credential payloads.
-9. **Endpoint guards** — confirm every portal endpoint is JWT-guarded and the webhook uses IP + secret guards (not JWT).
+9. **Endpoint guards** — confirm every portal endpoint is JWT-guarded, with `POST /auth/logout` as the one deliberate exception (see `rules.md`), and the webhook uses IP + secret guards (not JWT).
+10. **Session recovery** — confirm `POST /auth/logout` still works without a session and `GlobalExceptionFilter` still clears a rejected `access_token` only when no `refresh_token` remains. Both are load-bearing: without them a lapsed session locks the user out until they clear cookies by hand.
+11. **Production config** — confirm `ENABLE_TEST_SIGNALS` is not `true`, `TRADINGVIEW_IPS` is set (it fails closed, so an unset value means the bot silently never trades), and `CSRF_COOKIE_DOMAIN` is set if the portal and API are on different subdomains.
 
 Produce a clear PASS/FAIL summary. If anything fails, list exactly what to fix. Do not suggest deploying if any check fails.

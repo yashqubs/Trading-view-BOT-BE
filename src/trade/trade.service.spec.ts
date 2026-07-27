@@ -1,3 +1,4 @@
+import { ConflictException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
@@ -5,6 +6,7 @@ import { Direction, ExecutionMode, TradeStatus } from '../common/enums';
 import { IgApiException } from '../ig-client/ig-api.exception';
 import { IgClientService } from '../ig-client/ig-client.service';
 import { StockMapping } from '../mapping/entities/stock-mapping.entity';
+import { MappingService } from '../mapping/mapping.service';
 import { TradingRules } from '../trading-rules/entities/trading-rules.entity';
 import { TradingRulesService } from '../trading-rules/trading-rules.service';
 import { TradeLog } from './entities/trade-log.entity';
@@ -89,6 +91,10 @@ describe('TradeService', () => {
             recordFailure: jest.fn().mockResolvedValue(false),
             resetFailureCount: jest.fn().mockResolvedValue(undefined),
           },
+        },
+        {
+          provide: MappingService,
+          useValue: { findAll: jest.fn().mockResolvedValue([mapping]) },
         },
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
       ],
@@ -908,6 +914,216 @@ describe('TradeService', () => {
       // factor derived from offer (10020) vs signal 100 -> 100; fill 10020 / 100 = 100.20.
       expect(result.status).toBe(TradeStatus.SUCCESS);
       expect(result.executedPrice).toBe(100.2);
+    });
+  });
+
+  describe('closeAllOpenPositions', () => {
+    const longPosition = {
+      dealId: 'POS-LONG',
+      epic: mapping.igEpic,
+      direction: Direction.BUY,
+      size: 4,
+      level: 99,
+    };
+    const shortPosition = {
+      dealId: 'POS-SHORT',
+      epic: 'CS.D.TSLA.CASH.IP',
+      direction: Direction.SELL,
+      size: 2.5,
+      level: 210,
+    };
+
+    function acceptedConfirm(dealId: string) {
+      return {
+        dealId,
+        dealStatus: 'ACCEPTED' as const,
+        status: 'CLOSED' as const,
+        reason: null,
+        level: 100.2,
+      };
+    }
+
+    function mockedMappingService(): { findAll: jest.Mock } {
+      return (service as unknown as { mappingService: { findAll: jest.Mock } }).mappingService;
+    }
+
+    it('reports nothing to do when IG holds no positions', async () => {
+      igClientService.getOpenPositions.mockResolvedValue([]);
+
+      const result = await service.closeAllOpenPositions();
+
+      expect(result).toEqual({ attempted: 0, closed: 0, failures: [] });
+      expect(igClientService.closePosition).not.toHaveBeenCalled();
+    });
+
+    it('closes each position at market in the opposite direction, at its own size', async () => {
+      igClientService.getOpenPositions.mockResolvedValue([longPosition, shortPosition]);
+      igClientService.closePosition
+        .mockResolvedValueOnce({ dealReference: 'REF-CA-1' })
+        .mockResolvedValueOnce({ dealReference: 'REF-CA-2' });
+      igClientService.confirmDeal
+        .mockResolvedValueOnce(acceptedConfirm('DEAL-CA-1'))
+        .mockResolvedValueOnce(acceptedConfirm('DEAL-CA-2'));
+
+      const result = await service.closeAllOpenPositions();
+
+      // Closing a long is a SELL order; closing a short is a BUY order.
+      expect(igClientService.closePosition).toHaveBeenNthCalledWith(1, {
+        dealId: 'POS-LONG',
+        direction: Direction.SELL,
+        size: 4,
+        orderType: 'MARKET',
+      });
+      expect(igClientService.closePosition).toHaveBeenNthCalledWith(2, {
+        dealId: 'POS-SHORT',
+        direction: Direction.BUY,
+        size: 2.5,
+        orderType: 'MARKET',
+      });
+      expect(result).toEqual({ attempted: 2, closed: 2, failures: [] });
+    });
+
+    it('always sends MARKET orders, even when the stock is configured for SIGNAL_PRICE', async () => {
+      // A LIMIT order that cannot fill leaves the position open — the exact
+      // opposite of what "close all" promises.
+      const limitMapping = {
+        ...mapping,
+        executionMode: ExecutionMode.SIGNAL_PRICE,
+        maxSlippagePercent: 1,
+      } as StockMapping;
+      mockedMappingService().findAll.mockResolvedValue([limitMapping]);
+      igClientService.getOpenPositions.mockResolvedValue([longPosition]);
+      igClientService.closePosition.mockResolvedValue({ dealReference: 'REF-CA-3' });
+      igClientService.confirmDeal.mockResolvedValue(acceptedConfirm('DEAL-CA-3'));
+
+      await service.closeAllOpenPositions();
+
+      expect(igClientService.closePosition).toHaveBeenCalledWith(
+        expect.objectContaining({ orderType: 'MARKET' }),
+      );
+      expect(igClientService.closePosition).toHaveBeenCalledWith(
+        expect.not.objectContaining({ level: expect.anything() }),
+      );
+    });
+
+    it('logs each attempt as a closing trade so it never counts as new investment', async () => {
+      igClientService.getOpenPositions.mockResolvedValue([longPosition]);
+      igClientService.closePosition.mockResolvedValue({ dealReference: 'REF-CA-4' });
+      igClientService.confirmDeal.mockResolvedValue(acceptedConfirm('DEAL-CA-4'));
+
+      await service.closeAllOpenPositions();
+
+      expect(tradeLogRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          tvTicker: 'AAPL',
+          igEpic: mapping.igEpic,
+          direction: Direction.SELL,
+          size: 4,
+          isClosingTrade: true,
+          status: TradeStatus.SUCCESS,
+          maxSlippagePercent: null,
+        }),
+      );
+    });
+
+    it('keeps going after one position fails and reports which ones did not close', async () => {
+      igClientService.getOpenPositions.mockResolvedValue([longPosition, shortPosition]);
+      igClientService.closePosition
+        .mockRejectedValueOnce(new IgApiException('error.position.not-found'))
+        .mockResolvedValueOnce({ dealReference: 'REF-CA-5' });
+      igClientService.confirmDeal.mockResolvedValue(acceptedConfirm('DEAL-CA-5'));
+
+      const result = await service.closeAllOpenPositions();
+
+      expect(result.attempted).toBe(2);
+      expect(result.closed).toBe(1);
+      expect(result.failures).toEqual([
+        { tvTicker: 'AAPL', igEpic: mapping.igEpic, reason: 'error.position.not-found' },
+      ]);
+    });
+
+    it('refuses to trade a halted market rather than firing blind', async () => {
+      igClientService.getOpenPositions.mockResolvedValue([longPosition]);
+      igClientService.getMarketDetails.mockResolvedValue({
+        snapshot: {
+          marketStatus: 'EDITS_ONLY',
+          bid: 99.8,
+          offer: 100.2,
+          decimalPlacesFactor: 2,
+          scalingFactor: 1,
+        },
+      });
+
+      const result = await service.closeAllOpenPositions();
+
+      expect(igClientService.closePosition).not.toHaveBeenCalled();
+      expect(result.failures).toEqual([
+        { tvTicker: 'AAPL', igEpic: mapping.igEpic, reason: 'MARKET_CLOSED' },
+      ]);
+    });
+
+    it('never moves the auto-pause failure counter in either direction', async () => {
+      // Closing out after hours would otherwise silently pause the bot, and a
+      // successful manual close says nothing about the signal pipeline's health.
+      igClientService.getOpenPositions.mockResolvedValue([longPosition, shortPosition]);
+      igClientService.closePosition
+        .mockResolvedValueOnce({ dealReference: 'REF-CA-6' })
+        .mockRejectedValueOnce(new IgApiException('MARKET_CLOSED'));
+      igClientService.confirmDeal.mockResolvedValue(acceptedConfirm('DEAL-CA-6'));
+
+      await service.closeAllOpenPositions();
+
+      expect(tradingRulesService.resetFailureCount).not.toHaveBeenCalled();
+      expect(tradingRulesService.recordFailure).not.toHaveBeenCalled();
+    });
+
+    it('trusts IG open positions over an ambiguous confirmDeal', async () => {
+      // confirmDeal routinely reports deal-not-found for closes that actually
+      // went through — the position being gone is the real answer.
+      igClientService.getOpenPositions.mockResolvedValueOnce([longPosition]).mockResolvedValue([]);
+      igClientService.closePosition.mockResolvedValue({ dealReference: 'REF-CA-7' });
+      igClientService.confirmDeal.mockRejectedValue(
+        new IgApiException('error.confirms.deal-not-found'),
+      );
+
+      const result = await service.closeAllOpenPositions();
+
+      expect(result).toEqual({ attempted: 1, closed: 1, failures: [] });
+    });
+
+    it('closes an unmapped epic too, logging it under the epic itself', async () => {
+      mockedMappingService().findAll.mockResolvedValue([]);
+      igClientService.getOpenPositions.mockResolvedValue([shortPosition]);
+      igClientService.closePosition.mockResolvedValue({ dealReference: 'REF-CA-8' });
+      igClientService.confirmDeal.mockResolvedValue(acceptedConfirm('DEAL-CA-8'));
+
+      const result = await service.closeAllOpenPositions();
+
+      expect(result.closed).toBe(1);
+      expect(tradeLogRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({ tvTicker: 'CS.D.TSLA.CASH.IP', igEpic: 'CS.D.TSLA.CASH.IP' }),
+      );
+    });
+
+    it('rejects a second close-all while the first is still running', async () => {
+      igClientService.getOpenPositions.mockResolvedValue([longPosition]);
+      let releaseClose: (value: { dealReference: string }) => void = () => {};
+      igClientService.closePosition.mockReturnValue(
+        new Promise((resolve) => {
+          releaseClose = resolve;
+        }),
+      );
+      igClientService.confirmDeal.mockResolvedValue(acceptedConfirm('DEAL-CA-9'));
+
+      const first = service.closeAllOpenPositions();
+      await expect(service.closeAllOpenPositions()).rejects.toThrow(ConflictException);
+
+      releaseClose({ dealReference: 'REF-CA-9' });
+      await first;
+
+      // ...and the guard releases, so the next request works normally.
+      igClientService.closePosition.mockResolvedValue({ dealReference: 'REF-CA-10' });
+      await expect(service.closeAllOpenPositions()).resolves.toMatchObject({ closed: 1 });
     });
   });
 });

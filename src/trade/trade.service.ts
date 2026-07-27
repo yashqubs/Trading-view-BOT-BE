@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, Logger } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Between, Repository, SelectQueryBuilder } from 'typeorm';
@@ -7,6 +7,7 @@ import { IgApiException } from '../ig-client/ig-api.exception';
 import { IgClientService } from '../ig-client/ig-client.service';
 import { ConfirmDealResult, IgPosition } from '../ig-client/ig-client.types';
 import { StockMapping } from '../mapping/entities/stock-mapping.entity';
+import { MappingService } from '../mapping/mapping.service';
 import { resolveInvestmentAmount } from '../mapping/utils/resolve-investment-amount.util';
 import { TradingRules } from '../trading-rules/entities/trading-rules.entity';
 import { TradingRulesService } from '../trading-rules/trading-rules.service';
@@ -23,6 +24,20 @@ export interface PaginatedTradeLogs {
   items: TradeLog[];
   total: number;
   summary: TradeLogSummary;
+}
+
+export interface CloseAllFailure {
+  tvTicker: string;
+  igEpic: string;
+  /** The same raw IG error code the trade history shows for this attempt. */
+  reason: string;
+}
+
+export interface CloseAllPositionsResult {
+  /** How many positions IG reported open when the request started. */
+  attempted: number;
+  closed: number;
+  failures: CloseAllFailure[];
 }
 
 // Confirmed live 2026-07-16: IG's own position propagation can lag behind
@@ -51,10 +66,18 @@ const CONFIRM_DEAL_RETRY_DELAY_MS = 500;
 export class TradeService {
   private readonly logger = new Logger(TradeService.name);
 
+  // Guards against a second close-all landing while the first is mid-flight
+  // (an impatient double-click, or two tabs): both would read the same open
+  // positions and send duplicate close orders for the same dealIds. IG can
+  // only close each once, so the duplicates just log FAILED — harmless but
+  // confusing noise in the trade history, and easily avoided.
+  private closeAllInProgress = false;
+
   constructor(
     @InjectRepository(TradeLog) private readonly tradeLogRepository: Repository<TradeLog>,
     private readonly igClientService: IgClientService,
     private readonly tradingRulesService: TradingRulesService,
+    private readonly mappingService: MappingService,
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
@@ -238,20 +261,7 @@ export class TradeService {
         dealReference = result.dealReference;
       }
 
-      let confirmation: ConfirmDealResult | null = null;
-      let confirmError: unknown = null;
-      for (let attempt = 1; attempt <= CONFIRM_DEAL_MAX_ATTEMPTS; attempt++) {
-        try {
-          confirmation = await this.igClientService.confirmDeal(dealReference);
-          confirmError = null;
-          break;
-        } catch (error) {
-          confirmError = error;
-          if (attempt < CONFIRM_DEAL_MAX_ATTEMPTS) {
-            await this.delay(CONFIRM_DEAL_RETRY_DELAY_MS);
-          }
-        }
-      }
+      const { confirmation, confirmError } = await this.confirmWithRetries(dealReference);
 
       if (!confirmation || confirmation.dealStatus !== 'ACCEPTED') {
         // confirmDeal is sometimes ambiguous — it can throw (e.g. IG's
@@ -262,7 +272,7 @@ export class TradeService {
         // a real filled position. Never trust an ambiguous/negative confirm
         // alone — check IG's actual open positions first.
         const reconciled = await this.reconcileAgainstOpenPositions(
-          mapping,
+          mapping.igEpic,
           existingPosition,
           orderDirection,
           size,
@@ -306,12 +316,218 @@ export class TradeService {
     }
   }
 
+  /**
+   * confirmDeal throwing is usually IG-side propagation lag rather than a real
+   * rejection — see CONFIRM_DEAL_MAX_ATTEMPTS. Shared by the signal path and
+   * the manual close-all so both get the same retry behaviour.
+   */
+  private async confirmWithRetries(
+    dealReference: string,
+  ): Promise<{ confirmation: ConfirmDealResult | null; confirmError: unknown }> {
+    let confirmation: ConfirmDealResult | null = null;
+    let confirmError: unknown = null;
+
+    for (let attempt = 1; attempt <= CONFIRM_DEAL_MAX_ATTEMPTS; attempt++) {
+      try {
+        confirmation = await this.igClientService.confirmDeal(dealReference);
+        confirmError = null;
+        break;
+      } catch (error) {
+        confirmError = error;
+        if (attempt < CONFIRM_DEAL_MAX_ATTEMPTS) {
+          await this.delay(CONFIRM_DEAL_RETRY_DELAY_MS);
+        }
+      }
+    }
+
+    return { confirmation, confirmError };
+  }
+
+  /**
+   * @param options.resetFailureCount defaults true — a signal that traded
+   * cleanly proves the pipeline is healthy. The manual close-all passes false:
+   * it's a user action taken outside the signal pipeline, so it shouldn't move
+   * the consecutive-failure counter that governs auto-pause in either
+   * direction.
+   */
+  /**
+   * Closes every position currently open on IG, at market, in one go — the
+   * portal's manual "close all positions" button. Deliberately outside the
+   * signal pipeline: no condition checks, no daily throttles (closing reduces
+   * exposure, and blocking that over a cap would leave unwanted exposure
+   * open — same rule the signal path already follows for closes), and no
+   * bot_enabled gate, since the whole point is to be able to flatten the book
+   * while the bot is paused.
+   *
+   * Positions are closed one at a time rather than in parallel: IG rate-limits
+   * order placement, and a partial failure is far easier to reason about (and
+   * report back) when the order of attempts is deterministic. Every attempt
+   * writes its own trade_log row, so the history explains a partial result
+   * even though the response summarises it.
+   */
+  async closeAllOpenPositions(): Promise<CloseAllPositionsResult> {
+    if (this.closeAllInProgress) {
+      throw new ConflictException('A close-all request is already running');
+    }
+    this.closeAllInProgress = true;
+
+    try {
+      const [positions, mappings] = await Promise.all([
+        this.igClientService.getOpenPositions(),
+        this.mappingService.findAll(),
+      ]);
+      const byEpic = new Map(mappings.map((mapping) => [mapping.igEpic, mapping]));
+
+      const failures: CloseAllFailure[] = [];
+      let closed = 0;
+
+      for (const position of positions) {
+        // An unmapped epic is still a real position holding real money, so it
+        // gets closed too — the epic stands in for the ticker in the log.
+        const tvTicker = byEpic.get(position.epic)?.tvTicker ?? position.epic;
+        const log = await this.closePositionAtMarket(position, tvTicker);
+
+        if (log.status === TradeStatus.SUCCESS) {
+          closed += 1;
+        } else {
+          failures.push({
+            tvTicker,
+            igEpic: position.epic,
+            reason: log.errorMessage ?? 'UNKNOWN_ERROR',
+          });
+        }
+      }
+
+      this.logger.log(
+        `Manual close-all: ${closed}/${positions.length} positions closed` +
+          (failures.length ? `, failed: ${failures.map((f) => f.tvTicker).join(', ')}` : ''),
+      );
+
+      return { attempted: positions.length, closed, failures };
+    } finally {
+      this.closeAllInProgress = false;
+    }
+  }
+
+  /**
+   * One position, closed at market. Mirrors executeTrade's closing branch —
+   * opposite direction, the position's own size, the same ambiguous-confirm
+   * reconciliation — minus everything that only makes sense for a signal.
+   *
+   * Always MARKET, never LIMIT: "close everything now" means get out, and a
+   * LIMIT order that can't fill immediately just logs FAILED and leaves the
+   * position open, which is the opposite of what the button promises.
+   */
+  private async closePositionAtMarket(position: IgPosition, tvTicker: string): Promise<TradeLog> {
+    const orderDirection = position.direction === Direction.BUY ? Direction.SELL : Direction.BUY;
+
+    const baseLog: Partial<TradeLog> = {
+      tvTicker,
+      igEpic: position.epic,
+      direction: orderDirection,
+      // No LIMIT level is placed, so no tolerance is in force — same as any
+      // MARKET trade from the signal path.
+      maxSlippagePercent: null,
+      size: position.size,
+      tradeValue: null,
+      signalReceivedAt: new Date(),
+      isClosingTrade: true,
+      // signal_price is NOT NULL and there's no TradingView price behind a
+      // manual close, so it's filled in from IG's live quote below. Zero only
+      // survives if the quote lookup itself throws, in which case the row is
+      // FAILED and no order ever went out.
+      signalPrice: 0,
+    };
+
+    try {
+      const details = await this.igClientService.getMarketDetails(position.epic);
+      const reference =
+        orderDirection === Direction.BUY ? details.snapshot?.offer : details.snapshot?.bid;
+      if (reference == null || reference <= 0) {
+        throw new IgApiException('NO_LIVE_QUOTE');
+      }
+      if (details.snapshot.marketStatus !== 'TRADEABLE') {
+        throw new IgApiException('MARKET_CLOSED');
+      }
+
+      // A manual close has no signal price to derive the usual power-of-ten
+      // factor from (see derivePriceScaleFactor), so fall back to IG's own
+      // scalingFactor for the instrument, then to 1. This is purely
+      // presentational: size comes from the position itself, so unlike the
+      // signal path nothing here is *sized* from a price and a wrong factor
+      // can never produce a wrong order. Both prices below are divided by the
+      // same factor, so they stay comparable to each other regardless.
+      const scalingFactor = details.snapshot.scalingFactor;
+      const priceScaleFactor = scalingFactor && scalingFactor > 0 ? scalingFactor : 1;
+
+      baseLog.signalPrice = reference / priceScaleFactor;
+      baseLog.tradeValue = Number((position.size * reference).toFixed(2));
+
+      const { dealReference } = await this.igClientService.closePosition({
+        dealId: position.dealId,
+        direction: orderDirection,
+        size: position.size,
+        orderType: 'MARKET',
+      });
+
+      const { confirmation, confirmError } = await this.confirmWithRetries(dealReference);
+
+      if (!confirmation || confirmation.dealStatus !== 'ACCEPTED') {
+        // Same trap as the signal path: IG's confirms endpoint routinely
+        // reports deal-not-found for orders that actually went through, so
+        // never log FAILED on its word alone — check whether the position is
+        // actually gone first.
+        const reconciled = await this.reconcileAgainstOpenPositions(
+          position.epic,
+          position,
+          orderDirection,
+          position.size,
+        );
+        if (reconciled) {
+          this.logger.warn(
+            `Reconciled manual close of ${tvTicker} as SUCCESS via open-positions lookup — ` +
+              `confirmDeal was ambiguous (${confirmError ? this.resolveErrorCode(confirmError) : confirmation?.reason}).`,
+          );
+          return this.saveSuccess(
+            baseLog,
+            dealReference,
+            reconciled.dealId,
+            reconciled.level,
+            priceScaleFactor,
+            { resetFailureCount: false },
+          );
+        }
+
+        const errorMessage = confirmError
+          ? this.resolveErrorCode(confirmError)
+          : (confirmation?.reason ?? 'REJECTED');
+        return this.saveFailedAndHandle(baseLog, dealReference, errorMessage, {
+          recordFailure: false,
+        });
+      }
+
+      return this.saveSuccess(
+        baseLog,
+        dealReference,
+        confirmation.dealId,
+        confirmation.level,
+        priceScaleFactor,
+        { resetFailureCount: false },
+      );
+    } catch (error) {
+      return this.saveFailedAndHandle(baseLog, null, this.resolveErrorCode(error), {
+        recordFailure: false,
+      });
+    }
+  }
+
   private async saveSuccess(
     baseLog: Partial<TradeLog>,
     dealReference: string,
     dealId: string,
     level: number | null,
     priceScaleFactor: number,
+    options: { resetFailureCount?: boolean } = {},
   ): Promise<TradeLog> {
     const successLog = await this.tradeLogRepository.save(
       this.tradeLogRepository.create({
@@ -329,7 +545,9 @@ export class TradeService {
     );
     this.emitTradeCreated(successLog);
     await this.emitPositionsUpdated();
-    await this.tradingRulesService.resetFailureCount();
+    if (options.resetFailureCount ?? true) {
+      await this.tradingRulesService.resetFailureCount();
+    }
     return successLog;
   }
 
@@ -349,7 +567,7 @@ export class TradeService {
    * it before this retry was added).
    */
   private async reconcileAgainstOpenPositions(
-    mapping: StockMapping,
+    igEpic: string,
     existingPosition: IgPosition | null,
     orderDirection: Direction,
     size: number,
@@ -370,7 +588,7 @@ export class TradeService {
           // precise value just sent.
           const match = positions.find(
             (p) =>
-              p.epic === mapping.igEpic &&
+              p.epic === igEpic &&
               p.direction === orderDirection &&
               Math.abs(p.size - size) < 0.0001,
           );
@@ -556,10 +774,18 @@ export class TradeService {
     return latest?.signalReceivedAt ?? null;
   }
 
+  /**
+   * @param options.recordFailure defaults true. The manual close-all passes
+   * false: the consecutive-failure counter exists to auto-pause the bot when
+   * the *signal pipeline* keeps failing, and a user closing out after hours
+   * (MARKET_CLOSED on every position) must not silently pause trading as a
+   * side effect of a button they pressed for an unrelated reason.
+   */
   private async saveFailedAndHandle(
     baseLog: Partial<TradeLog>,
     dealReference: string | null,
     errorMessage: string,
+    options: { recordFailure?: boolean } = {},
   ): Promise<TradeLog> {
     const failedLog = await this.tradeLogRepository.save(
       this.tradeLogRepository.create({
@@ -570,6 +796,10 @@ export class TradeService {
       }),
     );
     this.emitTradeCreated(failedLog);
+
+    if (!(options.recordFailure ?? true)) {
+      return failedLog;
+    }
 
     const shouldAutoPause = await this.tradingRulesService.recordFailure();
     if (shouldAutoPause) {

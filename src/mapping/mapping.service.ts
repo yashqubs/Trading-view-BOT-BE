@@ -77,10 +77,10 @@ export class MappingService {
         return;
       case StockMappingSortBy.INVESTMENT_AMOUNT: {
         const rules = await this.tradingRulesService.get();
-        qb.orderBy('COALESCE(mapping.investment_amount, :defaultInvestment)', sortOrder).setParameter(
-          'defaultInvestment',
-          rules.investmentAmount,
-        );
+        qb.orderBy(
+          'COALESCE(mapping.investment_amount, :defaultInvestment)',
+          sortOrder,
+        ).setParameter('defaultInvestment', rules.investmentAmount);
         return;
       }
       case StockMappingSortBy.MAX_DAILY_SPEND:

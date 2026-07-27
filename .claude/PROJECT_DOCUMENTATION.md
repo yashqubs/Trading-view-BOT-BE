@@ -229,6 +229,7 @@ When a TradingView indicator fires a green (buy) or red (sell) signal, the bot a
 | Brute force lockout | 5 attempts / 15 min then locked | Stops password guessing |
 | Token blacklist | Access token invalidated on logout; refresh token revoked on logout too | Stolen token cannot be reused |
 | **Single active session (IMPLEMENTED)** | **One login per account at a time** — a fresh login on any device immediately invalidates every other device's session | A leaked/stolen session can't quietly persist alongside the real user's |
+| **Session recovery (IMPLEMENTED)** | A lapsed session always self-heals: `POST /auth/logout` needs no session, and an unrecoverable 401 evicts the dead cookies | A user coming back after a gap must never be stuck; see below |
 
 #### 2FA Implementation (Implemented)
 
@@ -246,6 +247,35 @@ When a TradingView indicator fires a green (buy) or red (sell) signal, the bot a
 - The kicked-out device's refresh token is gone too, so it can't silently renew its way back in via `POST /auth/refresh` either.
 - Not enforced for the "pending" session (forced password change / mid-2FA-challenge) — that's not a completed login yet, so it doesn't invalidate an already-logged-in session elsewhere.
 - No new endpoint was added for this — it's enforced transparently inside the existing login/refresh/JWT-validation path. See `src/auth/session/session.service.ts`, `src/auth/strategies/jwt.strategy.ts`, and migration `1700001300000-AddUserCurrentSessionId`.
+
+#### Session recovery (Implemented — 2026-07-27)
+
+**The bug this fixes.** A user who hadn't touched the portal for a few days came back to repeated `401 /api/auth/me` and could not log in again until they manually cleared cookies in the browser. Being logged out after a gap is correct — the refresh token's idle window is one hour. Being *unable to log back in* was not.
+
+Three separate faults combined:
+
+1. **`POST /auth/logout` was behind `JwtAuthGuard`**, so it required a valid session to end one. The person who most needs their cookies cleared is the one whose session already died — for them, logout returned 401 and there was no server-side path to remove the stale cookies at all.
+2. **Nothing cleared cookies on a failed auth.** A dead-but-still-present `access_token` cookie stops `CsrfGuard` waiving the double-submit check (it only waives when there is *no* `access_token` at all), so it starts demanding an `X-CSRF-Token` whose matching cookie may already be gone.
+3. **The frontend treated the app-load session probe as a mid-session death** — firing a doomed `/auth/refresh` and then a hard `window.location.assign('/login')` from inside React's first effect, so every cold visit did three failed auth calls and a full page reload before the login form rendered.
+
+**What now guarantees recovery:**
+
+| Change | Where | Note |
+|---|---|---|
+| `POST /auth/logout` needs no session and is CSRF-exempt | `AuthController.logout`, `CsrfGuard` | Always returns 200, always clears cookies, whatever it was handed. Logging out destroys authority rather than exercising it, so there is nothing for a guard to protect. A forged cross-site logout is a nuisance at worst, and SameSite=Strict already blocks it |
+| A 401 evicts the rejected `access_token` + `csrf_token` | `GlobalExceptionFilter` | **Only when no `refresh_token` cookie remains**, and never on `/auth/refresh` or `/auth/login` — see the two conditions below |
+| A refresh with no refresh cookie at all clears everything | `AuthService.refresh` | Nothing to rotate means no race to protect; unambiguously a dead session |
+| Cookie names + clearing rules live in one place | `src/auth/session/session-cookies.ts` | `GlobalExceptionFilter` is constructed by hand in `main.ts` (outside the DI container) so it can't inject `SessionService`; sharing the helper stops the two drifting on names or on the host-only/domain-scoped `csrf_token` pair |
+
+Both conditions on the filter are load-bearing:
+
+- **Never clear the `refresh_token`.** An expired access token is the normal state every 15 minutes and the refresh cookie is exactly what recovers from it. Clearing it would kill silent renewal outright.
+- **Only clear when there is no `refresh_token`.** When the access token lapses, a burst of concurrent requests all 401 together. If a slow one landed *after* the refresh had already installed a fresh cookie, clearing would wipe it and log the user out for real. No refresh cookie means no renewal is possible, so no such race can exist.
+- **Never clear on `/auth/refresh`.** Refresh tokens are single-use: a tab that loses the rotation race 401s there while the winner has already installed fresh cookies for everyone.
+
+**Session TTL is settled.** `REFRESH_TOKEN_TTL_MS` stays at **1 hour** — 7-day and 30-day "stay signed in" alternatives were explicitly considered and declined on 2026-07-27. A longer idle window is a longer replay window for a stolen cookie, and this portal moves real money. Signing in again after a gap is expected; the fix above is about that login being *clean*, not about avoiding it.
+
+See `src/auth/auth.controller.ts`, `src/common/filters/http-exception.filter.ts`, `src/common/guards/csrf.guard.ts`, and `src/auth/session/session-cookies.ts`. Frontend counterpart: `src/api/axios.ts` (`sessionProbe`, `NON_SESSION_401_PATHS`).
 
 ### Layer 5 — Secrets Management (Implemented)
 
@@ -284,7 +314,7 @@ How it works:
 | Daily total spend cap | Stops BUYs at daily GBP limit |
 | Daily trade count cap | Stops after max trades/day |
 | Consecutive failure auto-pause | Pauses bot after N failures |
-| SELL position check | Verifies open position before SELL |
+| Existing-position resolution | Resolves the ticker's open position (either direction) before the throttles — decides open vs. skip vs. reverse |
 
 ### Honest Security Statement
 
@@ -518,8 +548,10 @@ When a signal arrives, conditions are checked in sequence. The first failure sto
 3. ticker in mapping? (case-insensitive since 2026-07-16, see MappingService.findByTicker) → NO → NOT_MAPPED
 4. stock enabled?                  → NO → DISABLED
 5. resolve existing position for this ticker (either direction — see "Short Selling" below)
-     same direction already open?  → NO → ALREADY_LONG / ALREADY_SHORT
-     opposite direction open?      → this signal CLOSES it — skip straight to step 9, never throttled
+     same direction already open?  → ALREADY_LONG / ALREADY_SHORT
+     opposite direction open?      → REVERSAL: close it now (step 9, never throttled), then
+                                     if — and only if — that close came back SUCCESS,
+                                     run steps 6-8 and open in the signal's direction
      no position?                  → this signal OPENS one (BUY=long, SELL=short) — subject to steps 6-8
 6. daily trade count OK? (opening only)      → NO → DAILY_TRADE_LIMIT
 7. daily total investment OK? (opening only) → NO → DAILY_TOTAL_LIMIT
@@ -529,17 +561,24 @@ When a signal arrives, conditions are checked in sequence. The first failure sto
 11. if FAILED: increment failure counter; auto-pause if threshold hit
 ```
 
+> A reversal runs step 9 **twice** — once to close, once to reopen — and therefore writes two `trade_log` rows. If the close fails, the reopen is never attempted (fail-safe: never open on top of an uncertain state) and the failed close is what's returned. If the close succeeds but the reopen is throttled, the ticker is left **flat**, not reversed — the throttle skips the new exposure without ever withholding the close.
+
 ### Short Selling (added 2026-07-16)
 
 **One position per ticker, at most — never hedged.** Before this, a SELL with no open position was skipped (`NO_POSITION`); now it opens a short instead, symmetric with how a BUY opens a long. `SignalService.runPipeline` resolves the ticker's current open position (step 5) before the daily throttles, then branches:
 
 - **No position** → the signal OPENS new exposure (BUY → long, SELL → short). Subject to the same daily trade-count/total-investment/per-stock-spend throttles a BUY-opening-a-long always was — opening a short is new risk exposure just like opening a long, so it must be capped the same way.
 - **Position already in the signal's own direction** → skipped with `ALREADY_LONG` (BUY while already long) or `ALREADY_SHORT` (SELL while already short), so a repeated same-direction signal never silently doubles exposure.
-- **Position in the opposite direction** → the signal CLOSES it. Never throttled — the pre-existing reasoning still holds: blocking a close over a daily cap would leave unwanted exposure open, the unsafe outcome the throttles exist to prevent.
+- **Position in the opposite direction** → the signal **REVERSES** it: close the existing position, then open a fresh one in the signal's direction. Two distinct legs, with different rules:
+  - *The close* is never throttled — the pre-existing reasoning still holds: blocking a close over a daily cap would leave unwanted exposure open, the unsafe outcome the throttles exist to prevent.
+  - *The reopen* only happens if the close came back `SUCCESS`. An ambiguous or failed close means the position's true state is unknown, so nothing is opened on top of it (fail-safe) and the failed close row is returned.
+  - *The reopen is genuinely new exposure*, so it runs through the same daily throttles (steps 6-8) a from-flat open would. A throttled reopen leaves the ticker **flat** — closed but not reversed — which is the safe direction to fail in.
+  - A reversal therefore writes **two** `trade_log` rows on the happy path (the close, then the open), or one when the close fails or the reopen is throttled. Anything counting "trades per signal" must account for this.
 
 `TradeService.executeTrade` decides open-vs-close from whether `existingPosition` is null, **not** from `input.direction` — either direction can now open or close depending on what's already open:
 - Opening: the order direction sent to IG is `input.direction` (BUY opens long, SELL opens short); `calculateSize` sizes it exactly like opening a long always worked; `trade_value` is set.
-- Closing: the order direction sent to IG is the **opposite** of `existingPosition.direction` (closing a long is a SELL order; closing a short is a BUY order) — this can differ from `input.direction`'s naive reading when closing a short (a BUY signal closes it via a BUY order to IG, which happens to match, but the *reasoning* is "opposite of the position," not "same as input.direction," and is only reliably that way because the position check upstream guarantees this signal is exactly opposite to the open position). `trade_value` stays null — closing is never a new investment, whichever direction is closed. The live-quote reference side (offer/bid) and the LIMIT slippage ceiling/floor both follow this actual order direction, not `input.direction`.
+- Closing: the order direction sent to IG is the **opposite** of `existingPosition.direction` (closing a long is a SELL order; closing a short is a BUY order) — this can differ from `input.direction`'s naive reading when closing a short (a BUY signal closes it via a BUY order to IG, which happens to match, but the *reasoning* is "opposite of the position," not "same as input.direction," and is only reliably that way because the position check upstream guarantees this signal is exactly opposite to the open position). Size is the existing position's own size, not a recalculation. The live-quote reference side (offer/bid) and the LIMIT slippage ceiling/floor both follow this actual order direction, not `input.direction`.
+- `trade_value` is populated for **both** open and close (closes included since 2026-07-24) — a close moves real notional, and hiding it behind a null was misleading. What keeps a close out of every "money invested" aggregate and daily cap is the `is_closing_trade` boolean, **not** a null `trade_value`. Anything summing investment must filter on `is_closing_trade = false`.
 
 ### Global Conditions (trading_rules)
 
@@ -712,11 +751,26 @@ Internal service. Methods: login, refreshSession, searchMarkets, getOpenPosition
 | Dashboard | / | Global stats + charts |
 | Stocks | /stocks | Per-stock config table |
 | Stock Detail | /stocks/:ticker | Single-stock statistics + charts + per-stock trading conditions |
-| Open Positions | /positions | Currently open positions, live from IG |
+| Open Positions | /positions | Currently open positions, live from IG, plus a "Close all positions" button (see below) |
 | Trades | /trades | Full trade history with filters + CSV export |
 | Conditions | /conditions | Global trading rules |
 | Users | /users | User management |
 | Settings | /settings | Webhook URL, IG status, last TradingView signal received, password, 2FA |
+
+#### Close all positions (manual)
+
+`POST /trades/close-all-positions` (`TradeController` → `TradeService.closeAllOpenPositions`) flattens the book: every position IG reports open is closed at MARKET, one at a time, in the opposite direction and at the position's own size. Surfaced as a destructive, confirm-gated button on `/positions`.
+
+Deliberately outside the signal pipeline:
+
+- **No condition checks, no daily throttles, no `bot_enabled` gate.** Closing reduces exposure — the same reason the signal path never throttles a close — and the button has to work while the bot is paused, which is exactly when you'd reach for it.
+- **Always MARKET, never LIMIT**, whatever `execution_mode` the stock is set to. A LIMIT order that can't fill leaves the position open, the opposite of what the button promises.
+- **Never touches the consecutive-failure counter** (no `recordFailure`/`resetFailureCount`), so closing out after hours can't silently auto-pause the bot, and a successful manual close doesn't clear a genuine pipeline failure streak.
+- Closes **unmapped epics** too — a position with no `stock_mapping` is still real money; the epic stands in for the ticker in `trade_log`.
+- Every attempt writes its own `trade_log` row with `is_closing_trade = true`, and reuses the same ambiguous-`confirmDeal` reconciliation as the signal path (Section 9 "Confirm-deal reconciliation") — never log FAILED on IG's confirms endpoint alone.
+- A manual close has no TradingView price, so `signal_price` is filled from IG's live quote divided by the instrument's `snapshot.scalingFactor` (falling back to 1). Presentational only: size comes from the position itself, so unlike the signal path nothing here is *sized* from a price.
+
+Returns `{ attempted, closed, failures[] }` rather than failing outright — a partial result (one instrument halted, say) is a normal outcome and the portal names which positions are still open and why. Rate-limited to 3/min, and a second concurrent request gets a `409` so a double-click can't send duplicate close orders for the same `dealId`.
 
 ### Stack
 
@@ -798,7 +852,7 @@ All statistics are computed from the `trade_log` table by the StatsModule. No ex
 ### Visual Language
 
 - **Theme:** Dark mode default with a light mode toggle. Deep slate/near-black background (#0A0E1A range) with elevated card surfaces.
-- **Accent:** A single electric accent (teal-cyan or violet) used for primary actions, active states, and chart highlights. Not rainbow.
+- **Accent:** A single electric accent — **indigo-blue** (`#5666f5` dark / `#3548f3` light), which replaced the earlier teal-cyan/violet direction — used for primary actions, active states, and chart highlights. Not rainbow. Only the `--stat-*` palette is multi-hued, and only to distinguish stat cards and chart series.
 - **Typography:** Clean geometric sans (Inter or Geist). Large readable numbers for stats. Two weights only.
 - **Cards:** Subtle border, soft inner elevation, slight frosted/translucent surface. Rounded corners (12–16px).
 - **Charts:** Smooth, animated-in-on-load Recharts with the accent color. Gridlines muted. Tooltips on hover.
