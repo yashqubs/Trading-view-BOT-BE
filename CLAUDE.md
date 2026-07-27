@@ -133,6 +133,7 @@ Trades involve real money. Correctness and safety are non-negotiable. When in do
 - `pnpm migration:run` — run TypeORM migrations
 - `pnpm seed` — seed first user + trading_rules row
 - `pnpm clear-db -- --yes` — wipe every row from every table (dev/demo only — hard-blocked when NODE_ENV=production). Run `pnpm seed` after to get back to a working state
+- `pnpm clear-activity -- --yes` — `clear-trades` plus also signing everyone out: wipes `trade_log`, `refresh_tokens`, and `token_blacklist`, while **`trading_rules` config, `stock_mapping`, and `users` are all fully untouched** (only `consecutive_failure_count`/`auto_paused` reset — derived from trade history, not configuration, same as `clear-trades` already does). Same production hard-block. No `pnpm seed` needed
 - `pnpm clear-trades -- --yes` — wipe trade_log only (trade history) and reset the consecutive-failure counter + auto-pause flag; users, stock mappings, and all other trading rules stay intact (bot_enabled is never touched). Same production hard-block
 
 ## What to do before considering a task done

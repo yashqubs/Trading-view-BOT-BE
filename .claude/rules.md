@@ -32,6 +32,7 @@ These rules supplement CLAUDE.md. They are enforced in review.
 - **Never trust `confirmDeal` alone.** Any non-ACCEPTED or thrown confirm result is *ambiguous*, not a failure: reconcile against `GET /positions` (`reconcileAgainstOpenPositions`) before logging FAILED. Real filled trades have been reported as `error.confirms.deal-not-found`.
 - After a FAILED trade, increment `consecutive_failure_count`. If it reaches `max_consecutive_failures`, set `bot_enabled = false` and log AUTO_PAUSED. **Manual actions are exempt** — `closeAllOpenPositions` never moves that counter in either direction, so a user closing out after hours can't silently pause the bot.
 - Every IG call is wrapped in try/catch. On error, log FAILED with the IG error code (not the full error object).
+- **No script or automated path ever sets `bot_enabled = true`.** `clear-trades` and `clear-activity` leave `trading_rules` configuration fully alone (only the derived `consecutive_failure_count`/`auto_paused` reset); `clear-db` wipes the whole table, requiring `pnpm seed` to rebuild it at defaults. Only auto-pause may turn `bot_enabled` *off*; only a human turns it back on, from the portal. A maintenance script must never be the reason the bot starts placing orders again.
 
 ## Database rules
 

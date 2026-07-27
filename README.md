@@ -47,10 +47,23 @@ Two keys that are easy to miss:
 | `pnpm migration:generate src/database/migrations/<Name>` | Generate a migration from entity changes |
 | `pnpm seed` | First user + `trading_rules` row (skipped once any user exists) |
 | `pnpm clear-db -- --yes` | Wipe every row from every table. Run `pnpm seed` after |
+| `pnpm clear-activity -- --yes` | Wipe trade history + every session, **keeping stocks, users, and all trading_rules configuration** |
 | `pnpm clear-trades -- --yes` | Wipe `trade_log` only, plus reset the consecutive-failure counter and auto-pause flag |
 | `pnpm remove-stock <TICKER>... -- --yes` | Delete those stocks' mappings *and* their `trade_log` history, in one transaction (`--all` for every stock) |
 
-`clear-db` and `clear-trades` are hard-blocked when `NODE_ENV=production`.
+All three `clear-*` scripts are hard-blocked when `NODE_ENV=production`, and each refuses to do anything without `--yes` (printing exactly what it would touch first). They differ only in blast radius:
+
+| | `trade_log` | sessions | `trading_rules` config | `stock_mapping` | `users` |
+|---|---|---|---|---|---|
+| `clear-trades` | wiped | kept | kept (failure counters reset only) | kept | kept |
+| `clear-activity` | wiped | wiped | kept (failure counters reset only) | kept | kept |
+| `clear-db` | wiped | wiped | **wiped** | **wiped** | **wiped** |
+
+`clear-activity` is `clear-trades` plus also signing everyone out — it never touches configuration. Investment amount, execution mode, slippage, daily caps, `allow_buy`/`allow_sell`, and `bot_enabled` all keep exactly the values they were set to; only `consecutive_failure_count` and `auto_paused` reset to 0/false, since those are *derived* from trade history (now gone), not settings — the same thing `clear-trades` already does when it empties `trade_log`. Everyone is signed out, since clearing `refresh_tokens` revokes every session; credentials are unchanged.
+
+**`bot_enabled` is never touched by any of them.** If the bot was off — manually or by auto-pause — it stays off, and a human turns it back on knowingly from the portal. A cleanup script must never be the reason a trading bot starts placing orders again.
+
+Only `clear-db` needs `pnpm seed` afterwards; the other two leave the app fully working.
 
 ## Architecture
 
