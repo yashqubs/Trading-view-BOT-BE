@@ -4,8 +4,28 @@ packages:
 allowBuilds:
   '@nestjs/core': true
   bcrypt: true
+  # Native resolver pulled in by eslint-import-resolver-typescript. Its build
+  # script is deliberately not run: lint resolves fine without it, and this is
+  # a dev-only dependency, so there's no reason to execute its postinstall.
+  # Left unset, pnpm v11 rewrites this file with a placeholder on every
+  # install — stating it explicitly is what stops that.
+  unrs-resolver: false
 
+# Transitive security overrides — the single source of truth for them.
+#
+# This file is the only place pnpm reads overrides from: it ignores
+# package.json's top-level `overrides`, and since v11 the `pnpm.overrides`
+# key too (it warns and carries on). Since CI now runs `pnpm audit` against
+# pnpm-lock.yaml, an entry here is both what fixes the shipped tree and what
+# makes CI go green — there is no second list to keep in sync.
+#
+# Pin a direct dependency by bumping its range in package.json instead;
+# overrides are for transitive ones you cannot reach directly.
 overrides:
+  brace-expansion: '>=5.0.8'
+  # Dev-only (ajv, via @nestjs/cli and webpack's schema-utils). Capped below 4
+  # because ajv declares ^3 — 3.1.4 is the patched release on that line.
+  fast-uri: '^3.1.4'
   glob: '>=10.5.0'
   lodash: '>=4.17.24'
   multer: '>=2.2.0'

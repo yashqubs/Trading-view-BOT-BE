@@ -10,7 +10,7 @@ Execute in order and report results:
 2. `pnpm lint` — must pass
 3. `pnpm test` — all unit tests must pass
 4. `pnpm test:cov` — report coverage, flag if signal/ or trade/ modules are under 80%
-5. `pnpm audit:check` — no high or critical vulnerabilities
+5. `pnpm audit:check` — no high or critical vulnerabilities. Reads `pnpm-lock.yaml`, so it audits the exact tree that ships; it is the same command CI runs. Fix a direct dependency by bumping its range in `package.json`, a transitive one with an entry under `overrides:` in `pnpm-workspace.yaml`.
 
 Then do a manual review and report on:
 

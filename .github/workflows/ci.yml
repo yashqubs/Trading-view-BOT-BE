@@ -18,10 +18,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # No `version:` on purpose — action-setup reads package.json's
+      # `packageManager` field, so CI, the EC2 deploy, and local dev all
+      # resolve the same pnpm from one place instead of drifting.
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
-        with:
-          version: 10
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -41,21 +42,18 @@ jobs:
       - name: Run tests
         run: pnpm test
 
-      # `pnpm audit` is broken as of 2026-07: npm retired the legacy audit
-      # REST endpoints it depends on (410 Gone), and no stable pnpm release
-      # has migrated to the replacement bulk-advisory endpoint yet (only
-      # 12.0.0-alpha builds have). `npm audit` already works against that
-      # endpoint, but needs an npm-style lockfile — generated here in an
-      # isolated temp dir from package.json alone, so it never touches this
-      # job's real pnpm-managed node_modules/lockfile. Revert to `pnpm audit`
-      # once pnpm ships a stable fix.
+      # Audits pnpm-lock.yaml directly, i.e. the exact tree that ships.
+      #
+      # This previously shelled out to `npm audit` against a throwaway lockfile
+      # regenerated from package.json, because pnpm v10's audit still hit npm's
+      # retired REST endpoints (410 Gone). That workaround had a real blind
+      # spot: npm resolves each range to its newest version, while
+      # pnpm-lock.yaml pins whatever was locked at write time, so an advisory
+      # affecting only a pinned older version passed CI and deployed anyway. On
+      # 2026-07-27 it was hiding two high (fast-uri) and one moderate (typeorm)
+      # advisory. pnpm v11 audits correctly, so the workaround is gone.
       - name: Dependency audit
-        run: |
-          AUDIT_DIR=$(mktemp -d)
-          cp package.json "$AUDIT_DIR/"
-          cd "$AUDIT_DIR"
-          npm i --package-lock-only --no-audit --ignore-scripts
-          npm audit --audit-level=high
+        run: pnpm audit --audit-level=high
 
   deploy:
     name: Deploy to Production

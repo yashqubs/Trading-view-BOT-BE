@@ -129,7 +129,7 @@ Trades involve real money. Correctness and safety are non-negotiable. When in do
 - `pnpm test` — unit tests
 - `pnpm test:cov` — coverage
 - `pnpm lint` — eslint
-- `pnpm audit --audit-level=high` — dependency vulnerability check (must pass before deploy)
+- `pnpm audit:check` — dependency vulnerability check (must pass before deploy). Reads `pnpm-lock.yaml`, so it audits the exact tree that ships, and it's the same command CI runs. Fix a direct dependency by bumping its range in `package.json`; fix a transitive one with an entry under `overrides:` in `pnpm-workspace.yaml`, which is the single source of truth for those (pnpm ignores `package.json`'s `overrides`, and since v11 the `pnpm.overrides` key too).
 - `pnpm migration:run` — run TypeORM migrations
 - `pnpm seed` — seed first user + trading_rules row
 - `pnpm clear-db -- --yes` — wipe every row from every table (dev/demo only — hard-blocked when NODE_ENV=production). Run `pnpm seed` after to get back to a working state

@@ -42,7 +42,7 @@ Two keys that are easy to miss:
 | `pnpm start:prod` | Run the built server |
 | `pnpm test` / `pnpm test:cov` | Unit tests / with coverage |
 | `pnpm lint` | ESLint (`--fix`) |
-| `pnpm audit:check` | Fails on high-severity dependency vulnerabilities |
+| `pnpm audit:check` | Fails on high-severity vulnerabilities **in the real lockfile** — run this before releasing (see below) |
 | `pnpm migration:run` / `migration:revert` | Apply / roll back TypeORM migrations |
 | `pnpm migration:generate src/database/migrations/<Name>` | Generate a migration from entity changes |
 | `pnpm seed` | First user + `trading_rules` row (skipped once any user exists) |
@@ -108,7 +108,20 @@ Unit tests cover every service, with the heaviest coverage on `signal/` (the con
 
 ## Deployment
 
-Push to `main` runs `.github/workflows/ci.yml`: lint → build → test → `pnpm audit --audit-level=high`, and only then SSH-deploys to EC2 (migrate + `pm2 restart`). The deploy job is gated behind the CI job with `needs:`, so a failing check blocks the release rather than merely warning.
+Push to `main` runs `.github/workflows/ci.yml`: lint → build → test → dependency audit, and only then SSH-deploys to EC2 (migrate + `pm2 restart`). The deploy job is gated behind the CI job with `needs:`, so a failing check blocks the release rather than merely warning.
+
+### Dependency audits
+
+CI runs `pnpm audit --audit-level=high`, which reads `pnpm-lock.yaml` — so it audits **the exact tree that ships**. `pnpm audit:check` is the same command; run it locally and you get CI's answer.
+
+It used to shell out to `npm audit` against a lockfile regenerated from `package.json` in a temp dir, because pnpm v10's audit hit npm's retired REST endpoints. That workaround had a real blind spot — npm resolves each range to its newest version, while `pnpm-lock.yaml` pins whatever was locked at write time, so an advisory affecting only a pinned older version passed CI and deployed anyway. On 2026-07-27 it was concealing two high-severity `fast-uri` advisories and a moderate `typeorm` one. pnpm v11 audits correctly, so the workaround is gone.
+
+### Fixing a vulnerability
+
+- **Direct dependency** → bump its range in `package.json`.
+- **Transitive dependency** → add an entry to `overrides:` in **`pnpm-workspace.yaml`**. That is the single source of truth: pnpm ignores `package.json`'s top-level `overrides`, and since v11 the `pnpm.overrides` key too. Because CI audits the pnpm lockfile, one entry there fixes both the shipped tree and the CI gate.
+
+Prefer the narrowest range that clears the advisory, and note *why* in a comment — e.g. `fast-uri` is capped below 4 because ajv declares `^3`.
 
 Requires repo secrets `EC2_HOST`, `EC2_SSH_USER`, `EC2_SSH_KEY` and repo variable `DEPLOY_PATH`. Full server setup — Nginx, Certbot, PostgreSQL, PM2, Fail2ban, backups — is in Sections 16 and 18 of the project documentation.
 

@@ -6,3 +6,10 @@ coverage
 !.env.example
 *.log
 .DS_Store
+
+# This is a pnpm project — pnpm-lock.yaml is the only lockfile. A stray
+# package-lock.json is read by GitHub's dependency graph and Dependabot,
+# and the CI audit step generates one in a temp dir; neither should ever be
+# committed here.
+package-lock.json
+yarn.lock
