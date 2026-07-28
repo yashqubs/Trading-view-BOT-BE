@@ -19,6 +19,7 @@ import { TradeLogSummary } from './interfaces/trade-log-summary.interface';
 import { calculateLimitLevel } from './utils/calculate-limit-level.util';
 import { calculateSize } from './utils/calculate-size.util';
 import { assertSignalPricePlausible, derivePriceScaleFactor } from './utils/ig-price-scale.util';
+import { applyTradeLogFilters } from './utils/trade-log-query.util';
 
 export interface PaginatedTradeLogs {
   items: TradeLog[];
@@ -659,16 +660,7 @@ export class TradeService {
   }
 
   private buildFilteredQuery(query: TradeLogQueryDto): SelectQueryBuilder<TradeLog> {
-    const qb = this.tradeLogRepository.createQueryBuilder('trade');
-
-    if (query.ticker) qb.andWhere('trade.tvTicker = :ticker', { ticker: query.ticker });
-    if (query.status) qb.andWhere('trade.status = :status', { status: query.status });
-    if (query.direction)
-      qb.andWhere('trade.direction = :direction', { direction: query.direction });
-    if (query.from) qb.andWhere('trade.createdAt >= :from', { from: query.from });
-    if (query.to) qb.andWhere('trade.createdAt <= :to', { to: query.to });
-
-    return qb;
+    return applyTradeLogFilters(this.tradeLogRepository.createQueryBuilder('trade'), query);
   }
 
   private applySort(qb: SelectQueryBuilder<TradeLog>, query: TradeLogQueryDto): void {

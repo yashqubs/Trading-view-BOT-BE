@@ -752,7 +752,7 @@ Internal service. Methods: login, refreshSession, searchMarkets, getOpenPosition
 | Stocks | /stocks | Per-stock config table |
 | Stock Detail | /stocks/:ticker | Single-stock statistics + charts + per-stock trading conditions |
 | Open Positions | /positions | Currently open positions, live from IG, plus a "Close all positions" button (see below) |
-| Trades | /trades | Full trade history with filters + CSV export |
+| Trades | /trades | Full trade history with filters + CSV export — portal defaults to executed trades only (see below) |
 | Conditions | /conditions | Global trading rules |
 | Users | /users | User management |
 | Settings | /settings | Webhook URL, IG status, last TradingView signal received, password, 2FA |
@@ -771,6 +771,14 @@ Deliberately outside the signal pipeline:
 - A manual close has no TradingView price, so `signal_price` is filled from IG's live quote divided by the instrument's `snapshot.scalingFactor` (falling back to 1). Presentational only: size comes from the position itself, so unlike the signal path nothing here is *sized* from a price.
 
 Returns `{ attempted, closed, failures[] }` rather than failing outright — a partial result (one instrument halted, say) is a normal outcome and the portal names which positions are still open and why. Rate-limited to 3/min, and a second concurrent request gets a `409` so a double-click can't send duplicate close orders for the same `dealId`.
+
+#### Multi-status filtering on GET /trades (added 2026-07-27)
+
+`TradeLogQueryDto.status` accepts either a single value (`?status=FAILED`) or a comma-separated list (`?status=SUCCESS,FAILED`) — a `@Transform` normalizes both, plus repeated query keys (`?status=A&status=B`, which Nest's query pipe already hands through as `string[]`), into `TradeStatus[]`. `applyTradeLogFilters` (`src/trade/utils/trade-log-query.util.ts`, shared by `findAll` and `findAllForExport`/CSV) turns that into one `trade.status IN (:...statuses)` clause — same shape whether it's one status or several, so nothing downstream (pagination, `computeSummary`) needs to know the difference.
+
+This exists for the portal's "Executed only" default view (Section 12/Frontend docs) — SUCCESS + FAILED in a single request, rather than making the client fire two calls and merge them. A bare single value is unchanged from before and remains fully backward compatible.
+
+`computeSummary` runs against the same filtered query builder it always has, so the summary row already reflects whatever the status filter currently includes — this isn't new behavior, just newly exercised as the *default* case: `Skipped` reads `0` under the default filter, `Success rate` becomes success ÷ (success + failed) rather than diluted by skip volume. Selecting "All statuses" restores the old skip-inclusive numbers.
 
 ### Stack
 
