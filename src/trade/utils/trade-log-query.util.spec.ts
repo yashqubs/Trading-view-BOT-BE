@@ -78,6 +78,28 @@ describe('applyTradeLogFilters', () => {
     expect(qb.andWhere).toHaveBeenCalledWith('trade.createdAt <= :to', { to });
   });
 
+  it('widens a bare calendar-day "to" to the end of that day', () => {
+    const qb = fakeQb();
+    // What the portal's "Today" preset actually sends: ?to=2026-07-29, which
+    // the DTO parses as midnight. Left as midnight it excluded the whole day.
+    const to = new Date('2026-07-29T00:00:00.000Z');
+
+    applyTradeLogFilters(qb, { to });
+
+    expect(qb.andWhere).toHaveBeenCalledWith('trade.createdAt <= :to', {
+      to: new Date('2026-07-29T23:59:59.999Z'),
+    });
+  });
+
+  it('leaves an explicit timestamp "to" alone', () => {
+    const qb = fakeQb();
+    const to = new Date('2026-07-29T14:30:00.000Z');
+
+    applyTradeLogFilters(qb, { to });
+
+    expect(qb.andWhere).toHaveBeenCalledWith('trade.createdAt <= :to', { to });
+  });
+
   it('combines every filter in one call', () => {
     const qb = fakeQb();
     const from = new Date('2026-06-01T00:00:00.000Z');

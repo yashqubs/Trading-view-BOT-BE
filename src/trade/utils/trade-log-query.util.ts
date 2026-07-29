@@ -25,7 +25,31 @@ export function applyTradeLogFilters(
     qb.andWhere('trade.direction = :direction', { direction: query.direction });
   }
   if (query.from) qb.andWhere('trade.createdAt >= :from', { from: query.from });
-  if (query.to) qb.andWhere('trade.createdAt <= :to', { to: query.to });
+  if (query.to) qb.andWhere('trade.createdAt <= :to', { to: endOfDayIfDateOnly(query.to) });
 
   return qb;
+}
+
+/**
+ * The portal sends `to` as a bare calendar day (`2026-07-29` — see
+ * DateRangePicker.calcPreset), which the DTO's `@Type(() => Date)` parses as
+ * the START of that day, midnight UTC. Used as-is that made `to` exclude the
+ * whole day it names: the "Today" preset asked for `createdAt <= today 00:00`
+ * and so returned nothing but the first instant of the day, and every other
+ * preset silently dropped whatever happened on its end date (confirmed live
+ * 2026-07-29 — 8 trades visible under "All time" and 0 under "Today").
+ * Widening to the end of that day makes the bound inclusive, matching what
+ * stats-query.util's dateRangeBounds() already does for the stats endpoints.
+ *
+ * Only midnight-UTC values are widened, so an explicit timestamp from an API
+ * client still means exactly the instant it names.
+ */
+function endOfDayIfDateOnly(to: Date): Date {
+  const isMidnightUtc =
+    to.getUTCHours() === 0 &&
+    to.getUTCMinutes() === 0 &&
+    to.getUTCSeconds() === 0 &&
+    to.getUTCMilliseconds() === 0;
+
+  return isMidnightUtc ? new Date(to.getTime() + 24 * 60 * 60 * 1000 - 1) : to;
 }
