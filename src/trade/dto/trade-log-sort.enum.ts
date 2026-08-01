@@ -1,6 +1,7 @@
 export enum TradeLogSortBy {
   SIGNAL_RECEIVED_AT = 'signalReceivedAt',
   EXECUTED_AT = 'executedAt',
+  POSITION_OPENED_AT = 'positionOpenedAt',
   SIGNAL_PRICE = 'signalPrice',
   TRADE_VALUE = 'tradeValue',
   TV_TICKER = 'tvTicker',
@@ -14,6 +15,7 @@ export enum SortOrder {
 export const TRADE_LOG_SORT_COLUMN: Record<TradeLogSortBy, string> = {
   [TradeLogSortBy.SIGNAL_RECEIVED_AT]: 'trade.signalReceivedAt',
   [TradeLogSortBy.EXECUTED_AT]: 'trade.executedAt',
+  [TradeLogSortBy.POSITION_OPENED_AT]: 'trade.positionOpenedAt',
   [TradeLogSortBy.SIGNAL_PRICE]: 'trade.signalPrice',
   [TradeLogSortBy.TRADE_VALUE]: 'trade.tradeValue',
   [TradeLogSortBy.TV_TICKER]: 'trade.tvTicker',

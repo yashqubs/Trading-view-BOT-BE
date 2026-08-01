@@ -705,6 +705,91 @@ describe('TradeService', () => {
     });
   });
 
+  // position_opened_at is what lets a CLOSE row say how long the exposure was
+  // held. It has exactly one chance to be captured — while the position still
+  // exists — so these pin both halves of that.
+  describe('executeTrade — positionOpenedAt', () => {
+    it('stamps an opening fill with its own execution time', async () => {
+      igClientService.placeOrder.mockResolvedValue({ dealReference: 'REF-PO0' });
+      igClientService.confirmDeal.mockResolvedValue({
+        dealId: 'DEAL-PO0',
+        dealStatus: 'ACCEPTED',
+        status: 'OPEN',
+        reason: null,
+        level: 101,
+      });
+
+      const before = Date.now();
+      const result = await service.executeTrade(input, mapping, null, rules);
+
+      expect(result.status).toBe(TradeStatus.SUCCESS);
+      expect(result.isClosingTrade).toBe(false);
+      expect(result.positionOpenedAt).toBeInstanceOf(Date);
+      expect(result.positionOpenedAt!.getTime()).toBeGreaterThanOrEqual(before);
+      // An open's position started exactly when it filled.
+      expect(result.positionOpenedAt!.getTime()).toBe(result.executedAt!.getTime());
+    });
+
+    it("carries IG's open time for the position on a close, not the close's own time", async () => {
+      igClientService.closePosition.mockResolvedValue({ dealReference: 'REF-PO' });
+      igClientService.confirmDeal.mockResolvedValue({
+        dealId: 'DEAL-PO',
+        dealStatus: 'ACCEPTED',
+        status: 'CLOSED',
+        reason: null,
+        level: 108.5,
+      });
+
+      const result = await service.executeTrade(
+        { ...input, direction: Direction.SELL },
+        mapping,
+        {
+          dealId: 'POS-PO',
+          epic: mapping.igEpic,
+          direction: Direction.BUY,
+          size: 10,
+          level: 100,
+          openedAt: '2026-07-28T09:15:00.000Z',
+        },
+        rules,
+      );
+
+      expect(result.isClosingTrade).toBe(true);
+      expect(result.positionOpenedAt).toEqual(new Date('2026-07-28T09:15:00.000Z'));
+      // The close ran now; the position started days ago. Conflating the two
+      // is the exact bug this column exists to prevent.
+      expect(result.positionOpenedAt!.getTime()).toBeLessThan(result.executedAt!.getTime());
+    });
+
+    it('leaves it null on a close where IG reported no open time', async () => {
+      igClientService.closePosition.mockResolvedValue({ dealReference: 'REF-PO2' });
+      igClientService.confirmDeal.mockResolvedValue({
+        dealId: 'DEAL-PO2',
+        dealStatus: 'ACCEPTED',
+        status: 'CLOSED',
+        reason: null,
+        level: 108.5,
+      });
+
+      const result = await service.executeTrade(
+        { ...input, direction: Direction.SELL },
+        mapping,
+        {
+          dealId: 'POS-PO2',
+          epic: mapping.igEpic,
+          direction: Direction.BUY,
+          size: 10,
+          level: 100,
+          openedAt: null,
+        },
+        rules,
+      );
+
+      expect(result.isClosingTrade).toBe(true);
+      expect(result.positionOpenedAt).toBeNull();
+    });
+  });
+
   describe('executeTrade — SELL', () => {
     const sellInput: SignalInput = { ...input, direction: Direction.SELL };
     const existingPosition = {

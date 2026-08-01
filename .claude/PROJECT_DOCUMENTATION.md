@@ -511,15 +511,17 @@ Local development still uses `.env` for everything with `SECRETS_SOURCE=local` (
 | direction | VARCHAR(4) | BUY or SELL |
 | signal_price | DECIMAL(12,4) | From TradingView — used only to size the trade, not an execution price |
 | executed_price | DECIMAL(12,4), Nullable | Actual IG fill price (`confirmDeal`'s `level`). Orders are MARKET not LIMIT, so this can differ from signal_price. Null unless status = SUCCESS |
-| trade_value | DECIMAL(12,2), Nullable | Renamed from `investment_amount` 2026-07-15. The REAL £ notional actually committed (size × price-in-points) for a BUY that reached a computed size. Always NULL for SELL (closing a position is never a new investment) and for any BUY that never got that far (skipped/failed before sizing) |
-| size | DECIMAL(12,4), Nullable | Renamed from `quantity` 2026-07-15. IG's `size` — a £-per-point stake for BUY (see `calculateSize`), or the exact size of the position being closed for SELL. NOT a share count, despite the old column name implying one |
+| trade_value | DECIMAL(12,2), Nullable | Renamed from `investment_amount` 2026-07-15. The REAL £ notional actually committed (size × price-in-points) for any trade that reached a computed size — **open or close** (closes included since 2026-07-24). NULL only for a trade that never got that far (skipped, or failed before sizing). What keeps a close out of "money invested" aggregates is `is_closing_trade`, not a null here |
+| is_closing_trade | BOOLEAN, default false | True when the row closed an existing position rather than opening new exposure. Decided by whether `existingPosition` was null, **not** by direction. Every "money invested" aggregate and daily cap must filter `is_closing_trade = false`. Note `logSkip` never sets it, so it reads `false` on every skipped row regardless of what was held — only meaningful on SUCCESS/FAILED |
+| size | DECIMAL(12,4), Nullable | Renamed from `quantity` 2026-07-15. IG's `size` — a £-per-point stake for BUY (see `calculateSize`), or the exact size of the position being closed for SELL. NOT a share count, despite the old column name implying one. Stored unsigned; the portal applies IG's sign convention (shorts negative) at render time |
 | deal_reference | VARCHAR(100), Nullable | IG temp ref |
 | deal_id | VARCHAR(100), Nullable | IG permanent ID |
 | status | VARCHAR(30) | See status list |
 | skip_reason | VARCHAR(100), Nullable | Which condition skipped it |
 | error_message | TEXT, Nullable | IG error if FAILED |
-| signal_received_at | TIMESTAMP | |
-| executed_at | TIMESTAMP, Nullable | |
+| signal_received_at | TIMESTAMP | When the webhook arrived — the server's own clock, never TradingView's `{{time}}` (Section 14) |
+| executed_at | TIMESTAMP, Nullable | When IG filled the order |
+| position_opened_at | TIMESTAMPTZ, Nullable | Added 2026-08-01. When the POSITION this row acted on was opened — not when the row ran. On a close it's IG's own open time for the position being closed (`IgPosition.openedAt`, captured in `baseLog` while the position still exists); on a successful open it's that fill's own moment. NULL for skips, failed opens, closes where IG reported no open time, and every row predating the migration (deliberately not back-filled — see below) |
 | created_at | TIMESTAMP | |
 
 ### Trade Log Status Values
@@ -527,6 +529,8 @@ Local development still uses `.env` for everything with `SECRETS_SOURCE=local` (
 SUCCESS, FAILED, MARKET_CLOSED, NOT_MAPPED, DISABLED, NO_POSITION, BOT_PAUSED, BUY_DISABLED, SELL_DISABLED, ALREADY_LONG, ALREADY_SHORT, DAILY_TOTAL_LIMIT, DAILY_TRADE_LIMIT, GLOBAL_POSITION_LIMIT, STOCK_DAILY_LIMIT, COOL_DOWN, MAX_POSITIONS_STOCK, AUTO_PAUSED, DUPLICATE_SIGNAL
 
 > 19 statuses total. `DUPLICATE_SIGNAL` comes from the resend guard in `signal.service.ts` (see Section 9) — every webhook delivery writes a `trade_log` row, including duplicates. `ALREADY_LONG`/`ALREADY_SHORT` were added 2026-07-16 with short selling. `MARKET_CLOSED`, `GLOBAL_POSITION_LIMIT`, `COOL_DOWN`, and `MAX_POSITIONS_STOCK` are legacy-only: nothing writes them since the markets/trading-hours feature and the position-cap/cool-down throttles were removed. `NO_POSITION` is also legacy-only as of 2026-07-16: a SELL with no position now opens a short instead of skipping. All legacy statuses' historical rows remain.
+
+> **`position_opened_at` is never back-filled.** IG's open time was not captured before 2026-08-01, and it cannot be reconstructed afterwards for a position that has since been closed. Deriving it from the matching opening row's `executed_at` would be wrong for anything opened outside this bot — and, once written, indistinguishable from a real value. Historical rows stay NULL and the portal renders "—". The column also has exactly one capture point: `existingPosition` inside `TradeService.executeTrade`/`closePositionAtMarket`, while the position still exists. Migration `1700002300000-AddTradeLogPositionOpenedAt`.
 
 > No `closing_price` / `profit_loss` / `profit_loss_pct` columns. A "realized P&L" computed from the TradingView signal price on the closing trade existed briefly and was removed app-wide (frontend, `TradeService`, and a migration dropping the columns) — see Section 19 Limitation 1 for why.
 

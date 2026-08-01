@@ -157,6 +157,7 @@ export class TradeService {
       maxSlippagePercent: number | null;
       signalReceivedAt: Date;
       isClosingTrade: boolean;
+      positionOpenedAt: Date | null;
     } = {
       tvTicker: input.tvTicker,
       igEpic: mapping.igEpic,
@@ -169,6 +170,11 @@ export class TradeService {
       maxSlippagePercent: executionMode === ExecutionMode.SIGNAL_PRICE ? maxSlippagePercent : null,
       signalReceivedAt: input.signalReceivedAt,
       isClosingTrade: existingPosition !== null,
+      // Only a close knows this up front — it's IG's open time for the
+      // position about to be closed, and the only chance to capture it is
+      // now, while the position still exists. An open stamps its own fill
+      // time later, in saveSuccess.
+      positionOpenedAt: existingPosition?.openedAt ? new Date(existingPosition.openedAt) : null,
     };
 
     try {
@@ -433,6 +439,9 @@ export class TradeService {
       tradeValue: null,
       signalReceivedAt: new Date(),
       isClosingTrade: true,
+      // Same as the signal path: capture IG's open time for the position
+      // being closed while we still have the position in hand.
+      positionOpenedAt: position.openedAt ? new Date(position.openedAt) : null,
       // signal_price is NOT NULL and there's no TradingView price behind a
       // manual close, so it's filled in from IG's live quote below. Zero only
       // survives if the quote lookup itself throws, in which case the row is
@@ -530,6 +539,7 @@ export class TradeService {
     priceScaleFactor: number,
     options: { resetFailureCount?: boolean } = {},
   ): Promise<TradeLog> {
+    const now = new Date();
     const successLog = await this.tradeLogRepository.save(
       this.tradeLogRepository.create({
         ...baseLog,
@@ -541,7 +551,12 @@ export class TradeService {
         // which a bad signal price would distort) so executed_price is
         // comparable to signal_price everywhere.
         executedPrice: level != null ? level / priceScaleFactor : null,
-        executedAt: new Date(),
+        executedAt: now,
+        // An opening fill IS the moment its position started, so stamp it
+        // here rather than leaving the column null for half the rows. A close
+        // already carries IG's open time for the position it's closing
+        // (set in baseLog) — don't overwrite that with the close's own time.
+        positionOpenedAt: baseLog.positionOpenedAt ?? (baseLog.isClosingTrade ? null : now),
       }),
     );
     this.emitTradeCreated(successLog);

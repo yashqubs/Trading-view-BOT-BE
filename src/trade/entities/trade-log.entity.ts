@@ -115,6 +115,18 @@ export class TradeLog {
   @Column({ type: 'timestamptz', nullable: true, name: 'executed_at' })
   executedAt: Date | null;
 
+  // When the POSITION this row acted on was opened — not when this row ran.
+  // On a close it is IG's own open time for the position being closed
+  // (IgPosition.openedAt, from createdDateUTC), which is the whole point: a
+  // close otherwise gives no clue how long the exposure was held. On a
+  // successful open it is that fill's own moment, so one column answers "when
+  // did this position start" for either kind of row.
+  //
+  // Null whenever there's no position to speak of: every skipped signal, every
+  // failed open, and any close where IG reported no usable open time.
+  @Column({ type: 'timestamptz', nullable: true, name: 'position_opened_at' })
+  positionOpenedAt: Date | null;
+
   @CreateDateColumn({ type: 'timestamptz', name: 'created_at' })
   createdAt: Date;
 }

@@ -18,6 +18,7 @@ const COLUMNS: Array<keyof TradeLog> = [
   'errorMessage',
   'signalReceivedAt',
   'executedAt',
+  'positionOpenedAt',
   'createdAt',
 ];
 
