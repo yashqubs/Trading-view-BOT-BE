@@ -974,7 +974,9 @@ Returns dealId, dealStatus (ACCEPTED/REJECTED), status (OPEN/CLOSED), and `level
 > **This call is unreliable — never trust it alone (confirmed live 2026-07-16).** Across four separate real trades (GOOG, Coinbase, and Gold twice), `confirmDeal` either threw `error.confirms.deal-not-found` or otherwise failed to resolve, while IG's own history showed the order had genuinely filled. `TradeService.executeTrade` now treats any non-`ACCEPTED`/thrown result as ambiguous, not a confirmed failure, and reconciles against `GET /positions` before logging FAILED (`reconcileAgainstOpenPositions`) — see Section 9 "Confirm-deal reconciliation".
 
 **6. Get Open Positions (GET /positions, v2)**
-Returns array of positions with position.dealId, position.size, position.direction, position.level, market.epic, market.instrumentName. `level` (the open price, in IG's points scale) was added 2026-07-16 specifically to support confirm-deal reconciliation. Used for all position checks.
+Returns array of positions with position.dealId, position.size, position.direction, position.level, position.createdDateUTC, market.epic, market.instrumentName. `level` (the open price, in IG's points scale) was added 2026-07-16 specifically to support confirm-deal reconciliation. Used for all position checks.
+
+> **`createdDateUTC` is UTC but carries no offset** — IG formats it `2026-08-01T02:23:00`, so `new Date()` on it parses as *local* time and every open time silently lands hours out. `toIsoUtc` (exported from `ig-client.service.ts`, mapped onto `IgPosition.openedAt`) appends `Z` before parsing. IG's other timestamp, `createdDate`, is in the account's dealing time zone — which the API never names — so it is deliberately **not** used as a fallback: a missing open time is surfaced as `null` (rendered "—" in the portal) rather than guessed at. Pinned by `ig-client.service.spec.ts`.
 
 **7. Close Position (DELETE /positions/otc, v1)**
 Body: dealId, direction (opposite of open), size, orderType (MARKET by default, or LIMIT — same Execution Mode setting as opening a position), `level` (only when LIMIT), expiry (`'DFB'`). Used when a SELL signal closes an existing long position.
