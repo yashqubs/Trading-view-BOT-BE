@@ -6,7 +6,7 @@ import type { AxiosResponse } from 'axios';
 import { of, throwError } from 'rxjs';
 import { Direction } from '../common/enums';
 import { SecretsService } from '../secrets/secrets.service';
-import { IgClientService } from './ig-client.service';
+import { IgClientService, toIsoUtc } from './ig-client.service';
 
 function axiosError(status: number): unknown {
   return { response: { status, data: {} }, message: `HTTP ${status}` };
@@ -152,4 +152,29 @@ describe('IgClientService — request retry behaviour', () => {
       expect(service.stopRecording()).toEqual([]);
     });
   });
+});
+
+// IG reports position open times as UTC with no offset on the string. Getting
+// this wrong is silent: every "Opened" cell in the portal would just read a
+// few hours off, with nothing to flag it as wrong.
+describe('toIsoUtc — IG createdDateUTC normalization', () => {
+  it('treats an offset-less IG timestamp as UTC, not local time', () => {
+    expect(toIsoUtc('2026-08-01T02:23:00')).toBe('2026-08-01T02:23:00.000Z');
+  });
+
+  it('keeps fractional seconds', () => {
+    expect(toIsoUtc('2026-08-01T02:23:04.512')).toBe('2026-08-01T02:23:04.512Z');
+  });
+
+  it('leaves an already-zoned value alone rather than double-stamping it', () => {
+    expect(toIsoUtc('2026-08-01T02:23:00Z')).toBe('2026-08-01T02:23:00.000Z');
+    expect(toIsoUtc('2026-08-01T04:23:00+02:00')).toBe('2026-08-01T02:23:00.000Z');
+  });
+
+  it.each([[undefined], [null], [''], ['not a date']])(
+    'returns null for %p rather than a bogus instant',
+    (value) => {
+      expect(toIsoUtc(value)).toBeNull();
+    },
+  );
 });

@@ -547,7 +547,14 @@ describe('TradeService', () => {
         new IgApiException('error.confirms.deal-not-found'),
       );
       igClientService.getOpenPositions.mockResolvedValue([
-        { dealId: 'DEAL-5', epic: mapping.igEpic, direction: Direction.BUY, size: 10, level: 101 },
+        {
+          dealId: 'DEAL-5',
+          epic: mapping.igEpic,
+          direction: Direction.BUY,
+          size: 10,
+          level: 101,
+          openedAt: null,
+        },
       ]);
 
       const result = await service.executeTrade(input, mapping, null, rules);
@@ -597,6 +604,7 @@ describe('TradeService', () => {
           direction: Direction.BUY,
           size: 10,
           level: 99.5,
+          openedAt: null,
         },
       ]);
 
@@ -652,6 +660,7 @@ describe('TradeService', () => {
           direction: Direction.BUY,
           size: 3,
           level: 101,
+          openedAt: null,
         },
       ]);
 
@@ -704,6 +713,7 @@ describe('TradeService', () => {
       direction: Direction.BUY,
       size: 10,
       level: 100,
+      openedAt: null,
     };
 
     it('closes the existing position using its full size, and shows the real £ notional but flags it as not new investment', async () => {
@@ -857,6 +867,7 @@ describe('TradeService', () => {
         direction: Direction.SELL,
         size: 5,
         level: 100,
+        openedAt: null,
       };
 
       const buyCloseInput: SignalInput = { ...input, direction: Direction.BUY };
@@ -906,6 +917,7 @@ describe('TradeService', () => {
         direction: Direction.SELL,
         size: 5,
         level: 9900,
+        openedAt: null,
       };
 
       const buyCloseInput: SignalInput = { ...input, direction: Direction.BUY, signalPrice: 100 };
@@ -924,6 +936,7 @@ describe('TradeService', () => {
       direction: Direction.BUY,
       size: 4,
       level: 99,
+      openedAt: null,
     };
     const shortPosition = {
       dealId: 'POS-SHORT',
@@ -931,6 +944,7 @@ describe('TradeService', () => {
       direction: Direction.SELL,
       size: 2.5,
       level: 210,
+      openedAt: null,
     };
 
     function acceptedConfirm(dealId: string) {

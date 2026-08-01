@@ -38,6 +38,10 @@ export interface OpenPosition {
   igEpic: string;
   direction: Direction;
   size: number;
+  /** When IG opened the position (ISO 8601 UTC). Comes straight from IG, not
+   * from trade_log — a position opened outside this bot, or before the row was
+   * cleared, still reports one. Null when IG returned no usable timestamp. */
+  openedAt: string | null;
   /** False if IG reports a position for an epic that has no (or no longer has an) active stock_mapping row. */
   mapped: boolean;
 }

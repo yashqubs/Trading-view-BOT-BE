@@ -34,9 +34,40 @@ interface IgSession {
 
 interface IgPositionsResponse {
   positions: Array<{
-    position: { dealId: string; size: number; direction: Direction; level: number | null };
+    position: {
+      dealId: string;
+      size: number;
+      direction: Direction;
+      level: number | null;
+      /** IG /positions v2 — UTC, but formatted WITHOUT an offset
+       * ("2026-08-01T02:23:00"). See toIsoUtc. */
+      createdDateUTC?: string;
+      /** IG's other timestamp ("2026/08/01 03:23:00:000") — the account's
+       * dealing time zone, which the API never names. Deliberately unused. */
+      createdDate?: string;
+    };
     market: { epic: string };
   }>;
+}
+
+/**
+ * Normalizes IG's `createdDateUTC` into a real ISO 8601 instant.
+ *
+ * The value is UTC but carries no offset, so handing it straight to
+ * `new Date()` parses it as *local* time — every open time would be silently
+ * hours off for anyone not running in UTC, which is exactly the kind of wrong
+ * that looks plausible on screen. Appending `Z` pins it.
+ *
+ * Anything missing or unparseable returns null rather than falling back to
+ * IG's `createdDate`: that field is in the account's dealing time zone, which
+ * the API never tells us, so "converting" it would be a guess. A blank cell is
+ * honest; a confidently wrong open time on a trading portal is not.
+ */
+export function toIsoUtc(value: string | undefined | null): string | null {
+  if (!value) return null;
+  const withZone = /(Z|[+-]\d{2}:?\d{2})$/.test(value) ? value : `${value}Z`;
+  const parsed = new Date(withZone);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
 }
 
 /**
@@ -194,6 +225,7 @@ export class IgClientService {
       direction: entry.position.direction,
       size: Number(entry.position.size),
       level: entry.position.level != null ? Number(entry.position.level) : null,
+      openedAt: toIsoUtc(entry.position.createdDateUTC),
     }));
   }
 

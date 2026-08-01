@@ -67,6 +67,7 @@ function buildPosition(
     direction: Direction;
     size: number;
     level: number | null;
+    openedAt: string | null;
   }> = {},
 ) {
   return {
@@ -75,6 +76,7 @@ function buildPosition(
     direction: Direction.BUY,
     size: 10,
     level: 100,
+    openedAt: '2026-07-31T09:15:00.000Z',
     ...overrides,
   };
 }

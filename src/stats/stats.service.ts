@@ -165,6 +165,7 @@ export class StatsService {
           igEpic: position.epic,
           direction: position.direction,
           size: position.size,
+          openedAt: position.openedAt,
           mapped: !!mapping,
         };
       })
@@ -193,6 +194,15 @@ export class StatsService {
           return a.direction.localeCompare(b.direction) * dir;
         case OpenPositionsSortBy.SIZE:
           return (a.size - b.size) * dir;
+        case OpenPositionsSortBy.OPENED_AT:
+          // Nulls sort last in BOTH directions: a position IG gave no open
+          // time for is missing data, not "the oldest", and letting it lead
+          // the newest-first view would bury the rows that answer the
+          // question. ISO 8601 compares lexicographically = chronologically.
+          if (a.openedAt === b.openedAt) return 0;
+          if (a.openedAt === null) return 1;
+          if (b.openedAt === null) return -1;
+          return a.openedAt.localeCompare(b.openedAt) * dir;
         case OpenPositionsSortBy.TV_TICKER:
         default:
           return a.tvTicker.localeCompare(b.tvTicker) * dir;

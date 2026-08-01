@@ -39,6 +39,10 @@ export interface IgPosition {
   /** Open level, in IG's points scale — used to reconcile a trade whose
    * confirmDeal call was ambiguous (see TradeService's reconciliation path). */
   level: number | null;
+  /** When IG opened the position, as a full ISO 8601 UTC string. Null when IG
+   * didn't report one — see `toIsoUtc` in ig-client.service.ts for why a
+   * missing/unparseable value is surfaced as null rather than guessed at. */
+  openedAt: string | null;
 }
 
 export interface PlaceOrderParams {
