@@ -776,9 +776,9 @@ Returns `{ attempted, closed, failures[] }` rather than failing outright — a p
 
 `TradeLogQueryDto.status` accepts either a single value (`?status=FAILED`) or a comma-separated list (`?status=SUCCESS,FAILED`) — a `@Transform` normalizes both, plus repeated query keys (`?status=A&status=B`, which Nest's query pipe already hands through as `string[]`), into `TradeStatus[]`. `applyTradeLogFilters` (`src/trade/utils/trade-log-query.util.ts`, shared by `findAll` and `findAllForExport`/CSV) turns that into one `trade.status IN (:...statuses)` clause — same shape whether it's one status or several, so nothing downstream (pagination, `computeSummary`) needs to know the difference.
 
-This exists for the portal's "Executed only" default view (Section 12/Frontend docs) — SUCCESS + FAILED in a single request, rather than making the client fire two calls and merge them. A bare single value is unchanged from before and remains fully backward compatible.
+This exists for the portal's "Executed only" view (Section 12/Frontend docs) — SUCCESS + FAILED in a single request, rather than making the client fire two calls and merge them. It's the default on the per-stock trade table (`/stocks/:ticker`); `/trades` defaults to every status and reaches this filter only when the user picks it. A bare single value is unchanged from before and remains fully backward compatible.
 
-`computeSummary` runs against the same filtered query builder it always has, so the summary row already reflects whatever the status filter currently includes — this isn't new behavior, just newly exercised as the *default* case: `Skipped` reads `0` under the default filter, `Success rate` becomes success ÷ (success + failed) rather than diluted by skip volume. Selecting "All statuses" restores the old skip-inclusive numbers.
+`computeSummary` runs against the same filtered query builder it always has, so the summary row already reflects whatever the status filter currently includes — nothing special about the multi-status case: under "Executed only" `Skipped` reads `0` and `Success rate` becomes success ÷ (success + failed) rather than diluted by skip volume. "All statuses" gives the skip-inclusive numbers.
 
 ### Stack
 
@@ -893,7 +893,10 @@ BUY alert:
   "secret": "WEBHOOK_SECRET_VALUE",
   "ticker": "{{ticker}}",
   "action": "BUY",
-  "price": "{{close}}"
+  "price": "{{close}}",
+  "interval": "{{interval}}",
+  "time": "{{time}}",
+  "indicator": "Profit Investment"
 }
 ```
 
@@ -903,9 +906,16 @@ SELL alert:
   "secret": "WEBHOOK_SECRET_VALUE",
   "ticker": "{{ticker}}",
   "action": "SELL",
-  "price": "{{close}}"
+  "price": "{{close}}",
+  "interval": "{{interval}}",
+  "time": "{{time}}",
+  "indicator": "Profit Investment"
 }
 ```
+
+**Which fields the bot actually acts on:** `secret` (checked by `WebhookSecretGuard`), `ticker`, `action`, and `price` — those four are required and are the entire trading decision. `interval`, `time`, and `indicator` were added to the template on 2026-08-01 and are **contextual only**: optional, loosely validated (plain strings — a strict `@IsISO8601` on `time` would let a cosmetic field reject a real signal), and not persisted. In particular `time` is *not* used as `signal_received_at`; that stays the server's own receipt clock, so trade history reflects when we could actually have acted rather than when the bar opened. An alert still configured with the older four-field message keeps working unchanged.
+
+**The webhook route deliberately does not enforce `forbidNonWhitelisted`.** `POST /webhook/signal` declares its own `ValidationPipe({ whitelist: true, forbidNonWhitelisted: false, transform: true })`, overriding the global strict pipe in `main.ts`. The alert message is edited in TradingView, not in this repo, so a new field can appear against a running server with no deploy — under the global rule that is a `400`, and a rejected webhook is a whole trade lost with no `trade_log` row to explain it. `whitelist: true` still strips anything undeclared before it reaches the signal pipeline, so extra fields are tolerated, never trusted. Every other route stays strict. `src/webhook/dto/webhook-signal.dto.spec.ts` pins this behaviour.
 
 ### Step 3 — Webhook URL
 Notifications tab → Webhook URL → `https://your-domain.com/api/webhook/signal` on both alerts. Don't hand-type this — copy it from the portal's **Settings** page (System status → Webhook URL → copy icon), which reads it straight from the server's own `PUBLIC_BASE_URL`, so it's guaranteed to match what the server actually expects.
