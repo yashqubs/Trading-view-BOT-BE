@@ -22,12 +22,16 @@ allowBuilds:
 # Pin a direct dependency by bumping its range in package.json instead;
 # overrides are for transitive ones you cannot reach directly.
 overrides:
-  brace-expansion: '>=5.0.8'
+  brace-expansion: '>=5.0.9'
   # Dev-only (ajv, via @nestjs/cli and webpack's schema-utils). Capped below 4
-  # because ajv declares ^3 — 3.1.4 is the patched release on that line.
-  fast-uri: '^3.1.4'
+  # because ajv declares ^3 — 3.1.5 is the patched release on that line.
+  fast-uri: '^3.1.5'
   glob: '>=10.5.0'
   lodash: '>=4.17.24'
   multer: '>=2.2.0'
   picomatch: '>=4.0.4'
+  # Reached through @nestjs/platform-socket.io > socket.io, so it can't be
+  # pinned by bumping a direct dependency — socket.io ^4.8.3 is already current
+  # and still resolves the vulnerable parser.
+  socket.io-parser: '>=4.2.7'
   tmp: '>=0.2.6'
