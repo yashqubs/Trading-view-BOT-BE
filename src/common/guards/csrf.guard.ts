@@ -1,7 +1,15 @@
 import { CanActivate, ExecutionContext, ForbiddenException, Injectable } from '@nestjs/common';
 import { Request } from 'express';
+import { isLiveSessionToken } from '../../auth/session/access-token.util';
 
 const CSRF_PROTECTED_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+/**
+ * Exported so GlobalExceptionFilter can tell a CSRF rejection apart from the
+ * other 403 this app throws (JwtAuthGuard's "finish setting up 2FA"), which
+ * comes from a perfectly healthy session and must not trigger any cleanup.
+ */
+export const CSRF_ERROR_MESSAGE = 'Invalid or missing CSRF token';
 
 // Exempt routes authorize by something other than the session cookie — the
 // webhook by IP whitelist + shared secret, the auth routes by credentials,
@@ -40,10 +48,17 @@ const CSRF_EXEMPT_PATH_PREFIXES = [
  * Defense-in-depth on top of the existing SameSite=Strict cookie, which
  * already blocks this in modern browsers.
  *
- * Only enforced once a session actually exists (an `access_token` cookie is
- * present) — login/2fa doesn't rely on an existing session to authorize
- * anything, so there's nothing to protect there yet, and the webhook is
- * IP/secret-guarded rather than cookie-authenticated.
+ * Only enforced once a session actually exists — login/2fa doesn't rely on an
+ * existing session to authorize anything, so there's nothing to protect there
+ * yet, and the webhook is IP/secret-guarded rather than cookie-authenticated.
+ *
+ * "A session exists" means a *live* access token, not merely an `access_token`
+ * cookie sitting in the jar (see isLiveSessionToken). Treating any leftover
+ * cookie as a session is what locked users out: an expired token made this
+ * guard demand an X-CSRF-Token, the 403 short-circuited the request before
+ * JwtAuthGuard could turn it into the 401 that GlobalExceptionFilter uses to
+ * evict stale cookies, and the jar could then never heal itself — clearing
+ * cookies by hand was the only way back in.
  */
 @Injectable()
 export class CsrfGuard implements CanActivate {
@@ -56,7 +71,7 @@ export class CsrfGuard implements CanActivate {
     if (CSRF_EXEMPT_PATH_PREFIXES.some((prefix) => request.path.startsWith(prefix))) {
       return true;
     }
-    if (!request.cookies?.access_token) {
+    if (!isLiveSessionToken(request.cookies?.access_token)) {
       return true;
     }
 
@@ -69,7 +84,7 @@ export class CsrfGuard implements CanActivate {
       cookieToken.length === 0 ||
       cookieToken !== headerToken
     ) {
-      throw new ForbiddenException('Invalid or missing CSRF token');
+      throw new ForbiddenException(CSRF_ERROR_MESSAGE);
     }
 
     return true;

@@ -92,13 +92,20 @@ describe('SessionService', () => {
       expect(response.clearCookie).not.toHaveBeenCalledWith('csrf_token', expect.anything());
     });
 
-    it('clears both csrf_token variants when CSRF_COOKIE_DOMAIN is set', () => {
+    it('clears both variants of every cookie when CSRF_COOKIE_DOMAIN is set', () => {
+      // This is the escape hatch the frontend falls back to once it has run out
+      // of ways to recover a session, so it has to leave the jar genuinely
+      // empty. A single leftover — of any of the three, host-only or
+      // domain-scoped — shadows the real cookie for the rest of its max-age,
+      // which is the exact state this call exists to end.
       config.CSRF_COOKIE_DOMAIN = '.qubs.co.uk';
 
       service.clearCookie(response as never);
 
-      expect(response.clearCookie).toHaveBeenCalledWith('csrf_token');
-      expect(response.clearCookie).toHaveBeenCalledWith('csrf_token', { domain: '.qubs.co.uk' });
+      for (const name of ['access_token', 'csrf_token', 'refresh_token']) {
+        expect(response.clearCookie).toHaveBeenCalledWith(name);
+        expect(response.clearCookie).toHaveBeenCalledWith(name, { domain: '.qubs.co.uk' });
+      }
     });
   });
 });

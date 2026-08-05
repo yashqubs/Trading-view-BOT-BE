@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { clearStaleAccessCookies } from '../../auth/session/session-cookies';
+import { CSRF_ERROR_MESSAGE } from '../guards/csrf.guard';
 
 // A 401 on these paths is not evidence that the caller's session cookie is
 // dead, so they must not trigger the stale-cookie cleanup below:
@@ -74,12 +75,13 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     // cookie, clearing here would wipe it and log the user out for real. No
     // refresh cookie means no renewal is possible, so no such race exists.
     const recoverable = Boolean(request.cookies?.refresh_token);
-    if (
+    const staleAccessCookieOn401 =
       status === HttpStatus.UNAUTHORIZED &&
-      request.cookies?.access_token &&
+      Boolean(request.cookies?.access_token) &&
       !recoverable &&
-      !PRESERVE_COOKIES_ON_401_PREFIXES.some((prefix) => request.path.startsWith(prefix))
-    ) {
+      !PRESERVE_COOKIES_ON_401_PREFIXES.some((prefix) => request.path.startsWith(prefix));
+
+    if (staleAccessCookieOn401 || this.isCsrfRejection(status, message)) {
       clearStaleAccessCookies(response, this.csrfCookieDomain);
     }
 
@@ -89,5 +91,39 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       timestamp: new Date().toISOString(),
       message: typeof message === 'string' ? message : (message as Record<string, unknown>).message,
     });
+  }
+
+  /**
+   * A CSRF rejection means the access half of the jar is internally
+   * inconsistent — the `csrf_token` cookie is missing, expired ahead of its
+   * partner, or shadowed by a duplicate the browser sends first (a host-only
+   * leftover sorts ahead of the domain-scoped one, and cookie-parser keeps the
+   * first). None of that resolves on its own: the client cannot obtain a
+   * matching `csrf_token` without a new one being issued, so every subsequent
+   * mutation 403s identically until the cookie's max-age runs out. That is the
+   * "everything errors until I clear cookies" state.
+   *
+   * Dropping the access half breaks the loop without disturbing the session:
+   * the next request 401s, the refresh cookie silently renews it, and
+   * SessionService reissues `access_token` and `csrf_token` together and back
+   * in sync. If the refresh token is dead too, the frontend gives up and calls
+   * /auth/logout, which clears the rest. Either way the user never has to
+   * touch their cookies.
+   *
+   * Unconditional, unlike the 401 path — that one has to sidestep a refresh
+   * race (a slow 401 landing after a successful renewal would wipe the fresh
+   * cookies), and a CSRF 403 cannot be produced by that race: a renewed
+   * session gets a fresh cookie and a matching header on the retry.
+   *
+   * Matched on the message so JwtAuthGuard's other 403 — "finish setting up
+   * 2FA", thrown for a perfectly healthy pending session — is left alone.
+   */
+  private isCsrfRejection(status: number, message: unknown): boolean {
+    if (status !== HttpStatus.FORBIDDEN) {
+      return false;
+    }
+    const text =
+      typeof message === 'string' ? message : (message as Record<string, unknown> | null)?.message;
+    return text === CSRF_ERROR_MESSAGE;
   }
 }

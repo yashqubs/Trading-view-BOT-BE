@@ -229,7 +229,7 @@ When a TradingView indicator fires a green (buy) or red (sell) signal, the bot a
 | Brute force lockout | 5 attempts / 15 min then locked | Stops password guessing |
 | Token blacklist | Access token invalidated on logout; refresh token revoked on logout too | Stolen token cannot be reused |
 | **Single active session (IMPLEMENTED)** | **One login per account at a time** — a fresh login on any device immediately invalidates every other device's session | A leaked/stolen session can't quietly persist alongside the real user's |
-| **Session recovery (IMPLEMENTED)** | A lapsed session always self-heals: `POST /auth/logout` needs no session, and an unrecoverable 401 evicts the dead cookies | A user coming back after a gap must never be stuck; see below |
+| **Session recovery (IMPLEMENTED)** | A lapsed session always self-heals: CSRF is enforced only for a live token, an unrecoverable 401 or a CSRF 403 evicts the dead cookies, and the frontend hands a hopeless jar back to `POST /auth/logout` (which needs no session) | A user coming back after a gap must never be stuck, and must never have to clear cookies by hand; see below, both parts |
 
 #### 2FA Implementation (Implemented)
 
@@ -276,6 +276,32 @@ Both conditions on the filter are load-bearing:
 **Session TTL is settled.** `REFRESH_TOKEN_TTL_MS` stays at **1 hour** — 7-day and 30-day "stay signed in" alternatives were explicitly considered and declined on 2026-07-27. A longer idle window is a longer replay window for a stolen cookie, and this portal moves real money. Signing in again after a gap is expected; the fix above is about that login being *clean*, not about avoiding it.
 
 See `src/auth/auth.controller.ts`, `src/common/filters/http-exception.filter.ts`, `src/common/guards/csrf.guard.ts`, and `src/auth/session/session-cookies.ts`. Frontend counterpart: `src/api/axios.ts` (`sessionProbe`, `NON_SESSION_401_PATHS`).
+
+#### Session recovery, part 2 — why the 2026-07-27 fix didn't hold (2026-08-05)
+
+**The bug came back.** Same symptom, reported again on 2026-08-05: an error at login, no way in until cookies were cleared by hand. The 2026-07-27 work above was live and correct as far as it went — but the path it added was **unreachable from the state it existed to fix**. Reproduced against the live API before changing anything; each fault below was confirmed by observing real response headers, not inferred.
+
+| # | Fault | Why the earlier fix missed it |
+|---|---|---|
+| 1 | **`CsrfGuard` answered 403 for a stale jar, so the 401 cleanup never ran.** It is a global guard (`APP_GUARD`), so it runs *ahead* of every route's `JwtAuthGuard`. Its rule was "an `access_token` cookie exists ⇒ a session exists ⇒ demand `X-CSRF-Token`". A dead cookie therefore produced 403, which short-circuits the request before authentication can turn it into the 401 that `GlobalExceptionFilter` watches for. The self-healing branch was never entered | Every unit test passed. The fault was in the *interaction* between a global guard, a route guard, and a filter — no single unit was wrong |
+| 2 | **A dead-but-present `refresh_token` permanently suppressed the cleanup.** The filter only clears when no refresh cookie remains; `AuthService.refresh` deliberately never clears one whose rotation failed (to protect the single-use rotation race). So a browser holding a revoked refresh token kept presenting it, `recoverable` stayed true forever, and the access cookie was never evicted | The two rules are individually correct and jointly leave a state with no exit |
+| 3 | **Duplicate `csrf_token` cookies deadlock the double-submit check.** `cookie-parser` keeps the **first** of two same-named cookies, and a browser sends a host-only leftover ahead of the domain-scoped one. The server then compares the stale value against the header the portal read from `document.cookie` — the domain-scoped one. Never matches; unrepairable from the client | Introduced with `CSRF_COOKIE_DOMAIN` (2026-07-10); the clear-then-set in `issueAccessTokenCookie` only heals it on a *successful login*, not while stuck |
+| 4 | **The frontend never asked the server to tear a dead session down.** `onUnauthorized` cleared React state only. Cookies are httpOnly, so everything left in the jar kept going out on every later request — including the login attempts. `POST /auth/logout` would have cleared it all, and nothing ever called it | The escape hatch was built on 2026-07-27 and then left unused |
+| 5 | **403 was not handled at all in the axios interceptor** (`status !== 401` ⇒ reject). A CSRF 403 produced no refresh, no logout, no redirect — the portal just kept erroring | — |
+| 6 | **Every login error rendered as "Incorrect email or password."** `describeError` mapped all responses to the caller's fallback, so a 403 or a 429 looked like bad credentials | This is why it was misdiagnosed twice |
+
+**What now guarantees recovery** (all covered by `src/auth/session/session-recovery.spec.ts`, which drives real HTTP through `CsrfGuard` + `GlobalExceptionFilter` + `cookie-parser`, and fails against the pre-2026-08-05 code):
+
+| Change | Where |
+|---|---|
+| CSRF is enforced only for a **live** session — `isLiveSessionToken`: well-formed JWT, `exp` in the future — not merely a cookie that exists. Safe because every non-exempt mutating route is JWT-guarded, so a dead token still 401s; it just reaches authentication honestly instead of being turned away first | `CsrfGuard`, `src/auth/session/access-token.util.ts` |
+| A **CSRF 403 clears the access half**, unconditionally. The next request 401s, the refresh cookie renews it silently, and both cookies come back in sync. Matched on the message so `JwtAuthGuard`'s pending-2FA 403 (a healthy session) is untouched | `GlobalExceptionFilter.isCsrfRejection` |
+| `clearAllSessionCookies` clears host-only **and** domain-scoped variants of all three cookies | `src/auth/session/session-cookies.ts` |
+| The frontend calls `POST /auth/logout` whenever it gives up on a session, and again when the login page loads without one. Only the server can delete an httpOnly cookie, so this is the one thing that reliably ends a poisoned jar | `clearServerSession` / `giveUp` in `src/api/axios.ts`, `Login.tsx` |
+| A CSRF 403 is retried once, then falls through to the same teardown a dead session gets | `src/api/axios.ts` |
+| Login errors distinguish 401 / 403 / 429 / 5xx / unreachable | `describeError` in `src/pages/login/Login.tsx` |
+
+**Rule going forward:** needing to clear cookies by hand is never an acceptable resolution. If it ever works again as a fix, one of the guarantees above has been undone. Note the general lesson from fault 1 — a global guard runs before route guards, so anything it rejects never reaches the recovery logic hanging off authentication failures.
 
 ### Layer 5 — Secrets Management (Implemented)
 

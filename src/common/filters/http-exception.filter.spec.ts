@@ -96,15 +96,71 @@ describe('GlobalExceptionFilter — stale session cookie cleanup', () => {
     expect(response.clearCookie).not.toHaveBeenCalled();
   });
 
-  it('does not clear cookies on non-401 failures', () => {
-    const { host, response } = buildHost(requestFor('/api/rules', { access_token: 'live' }));
+  it('drops the access half on a CSRF rejection so the mismatch cannot persist', () => {
+    // A CSRF 403 means the csrf_token cookie and the header disagree, and the
+    // client cannot repair that: it can neither read the httpOnly half of the
+    // jar nor mint a replacement. Every later mutation then 403s identically
+    // until the cookie's max-age runs out — the "everything errors until I
+    // clear cookies" state. Dropping the access half turns the next request
+    // into a 401, which the refresh cookie silently renews, reissuing
+    // access_token and csrf_token together and back in sync.
+    const { host, response } = buildHost(
+      requestFor('/api/rules', { access_token: 'live', refresh_token: 'opaque' }),
+    );
 
     new GlobalExceptionFilter().catch(
       new ForbiddenException('Invalid or missing CSRF token'),
       host,
     );
 
+    expect(clearedCookieNames(response)).toEqual(['access_token', 'csrf_token']);
+    expect(response.status).toHaveBeenCalledWith(403);
+  });
+
+  it('clears on a CSRF rejection even with a refresh cookie present', () => {
+    // Unlike the 401 path, this needs no refresh-race guard: a renewed session
+    // gets a fresh cookie and a matching header on the retry, so a CSRF 403 is
+    // never the tail of a successful refresh. Gating it on the refresh cookie
+    // being absent is what left the common case — a live session with a
+    // poisoned csrf cookie — with no way out at all.
+    const { host, response } = buildHost(
+      requestFor('/api/trades/close-all-positions', {
+        access_token: 'live',
+        refresh_token: 'opaque',
+        csrf_token: 'shadowed',
+      }),
+    );
+
+    new GlobalExceptionFilter('.qubs.co.uk').catch(
+      new ForbiddenException('Invalid or missing CSRF token'),
+      host,
+    );
+
+    expect(response.clearCookie).toHaveBeenCalledWith('access_token');
+    expect(response.clearCookie).toHaveBeenCalledWith('csrf_token', { domain: '.qubs.co.uk' });
+  });
+
+  it('leaves cookies alone on the pending-session 403, which is a healthy session', () => {
+    // JwtAuthGuard throws this when a user still owes a password change. The
+    // session is fine; tearing its cookies down would break the very flow the
+    // 403 is steering them into.
+    const { host, response } = buildHost(requestFor('/api/rules', { access_token: 'live' }));
+
+    new GlobalExceptionFilter().catch(
+      new ForbiddenException('Finish setting up 2FA and changing your password to continue'),
+      host,
+    );
+
     expect(response.clearCookie).not.toHaveBeenCalled();
     expect(response.status).toHaveBeenCalledWith(403);
+  });
+
+  it('does not clear cookies on unrelated failures', () => {
+    const { host, response } = buildHost(requestFor('/api/rules', { access_token: 'live' }));
+
+    new GlobalExceptionFilter().catch(new Error('boom'), host);
+
+    expect(response.clearCookie).not.toHaveBeenCalled();
+    expect(response.status).toHaveBeenCalledWith(500);
   });
 });
